@@ -31,6 +31,8 @@ import android.provider.Settings;
 import android.util.LruCache;
 import android.util.Size;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AbsListView;
@@ -86,6 +88,11 @@ public class MainActivity extends Activity {
     private ImageView peek;
     private boolean peeking;
     private long peekId = -1;
+
+    // Saiz grid (cubit untuk ubah)
+    private int cols = 3, minCols = 2, maxCols = 6;
+    private ScaleGestureDetector scaleDet;
+    private float scaleAcc = 1f;
 
     // Penyunting
     private LinearLayout editorRoot, colorPanel, briPanel, cropPanel;
@@ -241,7 +248,19 @@ public class MainActivity extends Activity {
 
         FrameLayout body = new FrameLayout(this);
         grid = new GridView(this);
-        grid.setNumColumns(3);
+        boolean tablet = getResources().getConfiguration().smallestScreenWidthDp >= 600;
+        maxCols = tablet ? 10 : 6;
+        cols = Math.max(minCols, Math.min(maxCols, getSharedPreferences("fotonix", MODE_PRIVATE).getInt("cols", tablet ? 5 : 3)));
+        grid.setNumColumns(cols);
+        scaleDet = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override public boolean onScaleBegin(ScaleGestureDetector d) { scaleAcc = 1f; return true; }
+            @Override public boolean onScale(ScaleGestureDetector d) {
+                scaleAcc *= d.getScaleFactor();
+                if (scaleAcc > 1.25f) { setCols(cols - 1); scaleAcc = 1f; }      // cubit keluar: gambar lebih besar
+                else if (scaleAcc < 0.8f) { setCols(cols + 1); scaleAcc = 1f; }  // cubit masuk: lebih banyak gambar
+                return true;
+            }
+        });
         grid.setHorizontalSpacing(px(2));
         grid.setVerticalSpacing(px(2));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
@@ -253,14 +272,15 @@ public class MainActivity extends Activity {
         });
         grid.setOnItemLongClickListener((parent, view, pos, id) -> { startPeek(pos); return true; });
         grid.setOnTouchListener((v, ev) -> {
-            if (!peeking) return false;
             int a = ev.getActionMasked();
-            if (a == android.view.MotionEvent.ACTION_UP || a == android.view.MotionEvent.ACTION_CANCEL) {
+            if (!peeking) {
+                scaleDet.onTouchEvent(ev);
+                if (a == MotionEvent.ACTION_POINTER_DOWN) cancelGridTouch(ev);
+                return ev.getPointerCount() > 1 || scaleDet.isInProgress();
+            }
+            if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
                 endPeek();
-                android.view.MotionEvent c = android.view.MotionEvent.obtain(ev);
-                c.setAction(android.view.MotionEvent.ACTION_CANCEL);
-                grid.onTouchEvent(c);
-                c.recycle();
+                cancelGridTouch(ev);
             }
             return true;
         });
@@ -361,7 +381,9 @@ public class MainActivity extends Activity {
                 blp.setMargins(0, px(6), px(6), 0);
                 cell.addView(badge, blp);
             }
-            int h = grid.getHeight() > 0 ? (grid.getHeight() - px(2) * 4) / 5 : getResources().getDisplayMetrics().heightPixels / 6;
+            int rows = Math.max(2, Math.round(cols * 5f / 3f));   // 3 lajur = 5 baris
+            int gh = grid.getHeight() > 0 ? grid.getHeight() : getResources().getDisplayMetrics().heightPixels * 4 / 5;
+            int h = (gh - px(2) * (rows - 1)) / rows;
             cell.setLayoutParams(new AbsListView.LayoutParams(-1, h));
 
             final long id = ids.get(pos);
@@ -390,6 +412,25 @@ public class MainActivity extends Activity {
             });
             return cell;
         }
+    }
+
+    private void cancelGridTouch(MotionEvent ev) {
+        MotionEvent c = MotionEvent.obtain(ev);
+        c.setAction(MotionEvent.ACTION_CANCEL);
+        grid.onTouchEvent(c);
+        c.recycle();
+    }
+
+    private void setCols(int n) {
+        n = Math.max(minCols, Math.min(maxCols, n));
+        if (n == cols) return;
+        int first = grid.getFirstVisiblePosition();
+        cols = n;
+        getSharedPreferences("fotonix", MODE_PRIVATE).edit().putInt("cols", n).apply();
+        grid.setNumColumns(n);
+        adapter.notifyDataSetChanged();
+        grid.setSelection(first);
+        toast(n + " lajur × " + Math.round(n * 5f / 3f) + " baris");
     }
 
     // ================= Pilih & Padam =================
