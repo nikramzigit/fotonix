@@ -54,6 +54,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.HashMap;
 import java.util.Locale;
 import java.text.SimpleDateFormat;
@@ -90,6 +91,16 @@ public class MainActivity extends Activity {
     private TextView galTitle;
     private ImageView selBtn, pickBtn, cancelSelBtn, delBtn, moveBtn;
     private String moveTarget, moveTargetName;
+
+    // Duplikat
+    private ImageView dupBtn;
+    private LinearLayout dupRoot;
+    private TextView dupSummary;
+    private TextView dupDelBtn;
+    private DupAdapter dupAdapter;
+    private final ArrayList<List<DupFinder.Item>> dupGroups = new ArrayList<>();
+    private volatile boolean dupCancel;
+    private boolean deleteFromDup;
     private ArrayList<Long> pendingMove = new ArrayList<>();
     private boolean selecting;
     private final HashSet<Long> selected = new HashSet<>();
@@ -163,7 +174,8 @@ public class MainActivity extends Activity {
         peek.setBackgroundColor(0xF516203B);
         peek.setScaleType(ImageView.ScaleType.FIT_CENTER);
         peek.setVisibility(View.GONE);
-        root.addView(peek, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(buildDupScreen(), new FrameLayout.LayoutParams(-1, -1));
+        root.addView(peek, new FrameLayout.LayoutParams(-1, -1));   // intai sentiasa di atas
         setContentView(root);
 
         Uri shared = extractUri(getIntent());
@@ -196,6 +208,8 @@ public class MainActivity extends Activity {
             doc = null;
             showGallery();
             if (hasPerm()) loadGallery();
+        } else if (dupRoot.getVisibility() == View.VISIBLE) {
+            dupRoot.setVisibility(View.GONE);
         } else if (selecting) {
             setSelecting(false);
         } else super.onBackPressed();
@@ -262,7 +276,11 @@ public class MainActivity extends Activity {
         galTitle.setLetterSpacing(0.08f);
         galTitle.setPadding(px(10), 0, px(10), 0);
         top.addView(galTitle, new LinearLayout.LayoutParams(0, -2, 1));
+        dupBtn = iconBtn(R.drawable.ic_dup, "Cari & padam duplikat", BTN);
+        dupBtn.setOnClickListener(v -> startDupScan());
+        top.addView(dupBtn);
         selBtn = iconBtn(R.drawable.ic_select, "Pilih gambar", BTN);
+        ((LinearLayout.LayoutParams) selBtn.getLayoutParams()).leftMargin = px(8);
         selBtn.setOnClickListener(v -> setSelecting(true));
         top.addView(selBtn);
         moveBtn = iconBtn(R.drawable.ic_move, "Pindah ke album", BTN);
@@ -561,6 +579,7 @@ public class MainActivity extends Activity {
         delBtn.setVisibility(on ? View.VISIBLE : View.GONE);
         moveBtn.setVisibility(on ? View.VISIBLE : View.GONE);
         selBtn.setVisibility(on ? View.GONE : View.VISIBLE);
+        dupBtn.setVisibility(on ? View.GONE : View.VISIBLE);
         pickBtn.setVisibility(on ? View.GONE : View.VISIBLE);
         updateSelTitle();
         adapter.notifyDataSetChanged();
@@ -600,7 +619,11 @@ public class MainActivity extends Activity {
 
     private void deleteSelected() {
         if (selected.isEmpty()) { toast("Pilih gambar dahulu"); return; }
-        pendingDelete = new ArrayList<>(selected);
+        trashIds(new ArrayList<>(selected));
+    }
+
+    private void trashIds(ArrayList<Long> list) {
+        pendingDelete = list;
         final ArrayList<Uri> uris = new ArrayList<>();
         for (long id : pendingDelete) uris.add(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id));
         if (Build.VERSION.SDK_INT >= 30) {
@@ -650,9 +673,204 @@ public class MainActivity extends Activity {
         }
         toast(gone.size() + " gambar dipadam");
         setSelecting(false);
+        if (deleteFromDup) {
+            deleteFromDup = false;
+            dupRoot.setVisibility(View.GONE);
+            loadGallery();
+        }
         if (deleteFromEditor) {
             if (gone.isEmpty()) deleteFromEditor = false; else afterEditorDelete();
         }
+    }
+
+    // ================= Duplikat =================
+
+    private void startDupScan() {
+        if (!hasPerm()) { requestPerm(); return; }
+        askManageMediaOnce();
+        dupCancel = false;
+        final TextView msg = text("Menyediakan…", 15, Color.WHITE, false);
+        msg.setPadding(px(24), px(20), px(24), px(8));
+        final AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("Mencari gambar duplikat")
+                .setView(msg)
+                .setCancelable(false)
+                .setNegativeButton("Batal", (d, w) -> dupCancel = true)
+                .show();
+        new Thread(() -> {
+            List<List<DupFinder.Item>> res = null;
+            try {
+                res = new DupFinder(this).find(new DupFinder.Progress() {
+                    @Override public void onProgress(int done, int total) {
+                        ui.post(() -> msg.setText("Mengimbas " + done + " / " + total + " gambar…\n(Imbasan pertama lebih lama; seterusnya pantas)"));
+                    }
+                    @Override public boolean cancelled() { return dupCancel; }
+                });
+            } catch (Throwable ignored) {}
+            final List<List<DupFinder.Item>> r = res;
+            ui.post(() -> {
+                try { dlg.dismiss(); } catch (Exception ignored) {}
+                if (dupCancel || r == null) return;
+                if (r.isEmpty()) { toast("Tiada gambar duplikat ditemui"); return; }
+                dupGroups.clear();
+                dupGroups.addAll(r);
+                dupAdapter.notifyDataSetChanged();
+                updateDupSummary();
+                dupRoot.setVisibility(View.VISIBLE);
+            });
+        }).start();
+    }
+
+    private View buildDupScreen() {
+        dupRoot = new LinearLayout(this);
+        dupRoot.setOrientation(LinearLayout.VERTICAL);
+        dupRoot.setBackgroundColor(BG);
+        dupRoot.setClickable(true);
+        dupRoot.setVisibility(View.GONE);
+
+        LinearLayout top = bar();
+        ImageView close = iconBtn(R.drawable.ic_close, "Tutup", BTN);
+        close.setOnClickListener(v -> dupRoot.setVisibility(View.GONE));
+        top.addView(close);
+        LinearLayout info = new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.setPadding(px(12), 0, 0, 0);
+        TextView t = text("GAMBAR DUPLIKAT", 15, Color.WHITE, true);
+        t.setLetterSpacing(0.08f);
+        dupSummary = text("", 11, MUTED, false);
+        info.addView(t);
+        info.addView(dupSummary);
+        top.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+        dupRoot.addView(top);
+
+        TextView hint = text("Gambar bertanda SIMPAN ialah resolusi terbaik. Tekan mana-mana gambar untuk tukar SIMPAN / PADAM.", 12, MUTED, false);
+        hint.setPadding(px(14), px(10), px(14), px(6));
+        dupRoot.addView(hint);
+
+        android.widget.ListView lv = new android.widget.ListView(this);
+        lv.setDivider(new android.graphics.drawable.ColorDrawable(DIVIDER));
+        lv.setDividerHeight(px(1));
+        lv.setSelector(new android.graphics.drawable.ColorDrawable(0));
+        dupAdapter = new DupAdapter();
+        lv.setAdapter(dupAdapter);
+        dupRoot.addView(lv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        dupDelBtn = text("", 14, Color.WHITE, true);
+        dupDelBtn.setGravity(Gravity.CENTER);
+        dupDelBtn.setLetterSpacing(0.08f);
+        dupDelBtn.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x33FFFFFF), round(CORAL, RADIUS), null));
+        dupDelBtn.setOnClickListener(v -> {
+            ArrayList<Long> del = new ArrayList<>();
+            for (List<DupFinder.Item> g : dupGroups) for (DupFinder.Item it : g) if (it.del) del.add(it.id);
+            if (del.isEmpty()) { toast("Tiada gambar ditanda PADAM"); return; }
+            deleteFromDup = true;
+            trashIds(del);
+        });
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, px(50));
+        blp.setMargins(px(12), px(10), px(12), px(14));
+        dupRoot.addView(dupDelBtn, blp);
+        return dupRoot;
+    }
+
+    private void updateDupSummary() {
+        int n = 0;
+        long bytes = 0;
+        for (List<DupFinder.Item> g : dupGroups) for (DupFinder.Item it : g) if (it.del) { n++; bytes += it.size; }
+        dupSummary.setText(dupGroups.size() + " kumpulan  ·  " + n + " untuk dipadam  ·  " + mb(bytes) + " dijimatkan");
+        dupDelBtn.setText("PADAM " + n + " DUPLIKAT");
+        dupDelBtn.setAlpha(n == 0 ? 0.4f : 1f);
+    }
+
+    private String mb(long b) {
+        return b >= 1024 * 1024 ? String.format(Locale.US, "%.1f MB", b / 1048576f) : (b / 1024) + " KB";
+    }
+
+    private class DupAdapter extends BaseAdapter {
+        public int getCount() { return dupGroups.size(); }
+        public Object getItem(int p) { return dupGroups.get(p); }
+        public long getItemId(int p) { return p; }
+
+        public View getView(int pos, View cv, ViewGroup parent) {
+            final List<DupFinder.Item> g = dupGroups.get(pos);
+            LinearLayout row = new LinearLayout(MainActivity.this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(px(12), px(10), px(12), px(12));
+            TextView head = text("KUMPULAN " + (pos + 1) + "  ·  " + g.size() + " GAMBAR", 11, MUTED, true);
+            head.setLetterSpacing(0.08f);
+            row.addView(head);
+            android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(MainActivity.this);
+            hs.setHorizontalScrollBarEnabled(false);
+            LinearLayout cells = new LinearLayout(MainActivity.this);
+            int cw = (getResources().getDisplayMetrics().widthPixels - px(24) - px(16)) / 3;
+            for (final DupFinder.Item it : g) {
+                cells.addView(dupCell(it, g, cw), new LinearLayout.LayoutParams(cw, -2));
+                ((LinearLayout.LayoutParams) cells.getChildAt(cells.getChildCount() - 1).getLayoutParams()).rightMargin = px(8);
+            }
+            hs.addView(cells);
+            LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-1, -2);
+            hlp.topMargin = px(8);
+            row.addView(hs, hlp);
+            return row;
+        }
+    }
+
+    private View dupCell(final DupFinder.Item it, final List<DupFinder.Item> group, int cw) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setBackgroundColor(BAR);
+        FrameLayout imgBox = new FrameLayout(this);
+        final ImageView iv = new ImageView(this);
+        iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        imgBox.addView(iv, new FrameLayout.LayoutParams(-1, -1));
+        View frame = new View(this);
+        GradientDrawable fr = new GradientDrawable();
+        fr.setColor(it.del ? 0x55FF4C67 : 0);
+        fr.setStroke(px(3), it.del ? CORAL : ACCENT);
+        frame.setBackground(fr);
+        imgBox.addView(frame, new FrameLayout.LayoutParams(-1, -1));
+        TextView tag = text(it.del ? "PADAM" : "SIMPAN", 11, Color.WHITE, true);
+        tag.setLetterSpacing(0.08f);
+        tag.setPadding(px(6), px(2), px(6), px(2));
+        tag.setBackgroundColor(it.del ? CORAL : ACCENT);
+        FrameLayout.LayoutParams tlp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
+        tlp.setMargins(px(3), px(3), 0, 0);
+        imgBox.addView(tag, tlp);
+        cell.addView(imgBox, new LinearLayout.LayoutParams(cw, cw));
+        TextView res = text((it.w > 0 ? it.w + "×" + it.h : "?") + "\n" + mb(it.size), 11, it.del ? MUTED : Color.WHITE, false);
+        res.setPadding(px(6), px(4), px(6), px(6));
+        cell.addView(res);
+
+        iv.setTag(it.id);
+        Bitmap bm = cache.get(it.id);
+        iv.setImageBitmap(bm);
+        if (bm == null) pool.execute(() -> {
+            Bitmap tb = loadThumb(it.id);
+            if (tb == null) return;
+            cache.put(it.id, tb);
+            ui.post(() -> { if (Long.valueOf(it.id).equals(iv.getTag())) iv.setImageBitmap(tb); });
+        });
+
+        cell.setOnClickListener(v -> {
+            it.del = !it.del;
+            boolean anyKeep = false;
+            for (DupFinder.Item x : group) if (!x.del) anyKeep = true;
+            if (!anyKeep) { it.del = false; toast("Sekurang-kurangnya satu gambar mesti disimpan"); return; }
+            dupAdapter.notifyDataSetChanged();
+            updateDupSummary();
+        });
+        cell.setOnLongClickListener(v -> {
+            // tekan lama: lihat penuh
+            int idx = ids.indexOf(it.id);
+            if (idx >= 0) { startPeek(idx); v.setOnTouchListener((vv, ev) -> {
+                if (ev.getActionMasked() == android.view.MotionEvent.ACTION_UP || ev.getActionMasked() == android.view.MotionEvent.ACTION_CANCEL) {
+                    endPeek(); vv.setOnTouchListener(null);
+                }
+                return false;
+            }); }
+            return true;
+        });
+        return cell;
     }
 
     // ================= Pindah ke album =================
@@ -838,7 +1056,7 @@ public class MainActivity extends Activity {
         }
         if (req == REQ_DELETE) {
             if (res == RESULT_OK) removeIds(pendingDelete);
-            else { toast("Padam dibatalkan"); deleteFromEditor = false; selected.clear(); }
+            else { toast("Padam dibatalkan"); deleteFromEditor = false; deleteFromDup = false; selected.clear(); }
             return;
         }
         if (req == REQ_PICK && res == RESULT_OK && data != null && data.getData() != null) {
