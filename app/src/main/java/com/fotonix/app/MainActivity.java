@@ -61,7 +61,10 @@ public class MainActivity extends Activity {
 
     private static final int REQ_PERM = 10, REQ_PICK = 11, REQ_DELETE = 12;
     private static final int PREVIEW_MAX = 2048;
-    private static final int BG = 0xFF111418, BAR = 0xFF1A1E24, BTN = 0xFF2A2F37, ACCENT = 0xFF4DA3FF, MUTED = 0xFF9AA0A6;
+    // Palet skill-phone-dark (flat: tiada bayang, tiada gradien)
+    private static final int BG = 0xFF16203B, BAR = 0xFF324065, BTN = 0xFF4B597C, INPUT = 0xFF3E4B6E, DIVIDER = 0xFF2D3A5D;
+    private static final int ACCENT = 0xFF00ABAC, TEAL_BTN = 0xFF00C1BB, CORAL = 0xFFFF4C67, SKY = 0xFF00ADDF;
+    private static final int MUTED = 0xFF7A8299, RADIUS = 3;
     private static final int[] PEN_COLORS = {0xFFE53935, 0xFF1E63E9, 0xFF000000};
     private static final String[] PEN_NAMES = {"Merah", "Biru", "Hitam"};
     private static final int T_NONE = 0, T_CROP = 1, T_DRAW = 2, T_BRI = 3;
@@ -127,6 +130,7 @@ public class MainActivity extends Activity {
     private SeekBar bri;
     private ImageView saveBtn, editDelBtn;
     private LinearLayout[] tools = new LinearLayout[4];
+    private View[] toolLines = new View[4];
     private View[] dots = new View[3];
     private int activeTool = T_NONE, penIdx = 0;
     private Uri curUri;
@@ -139,7 +143,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         dp = getResources().getDisplayMetrics().density;
-        getWindow().setStatusBarColor(BAR);
+        getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BAR);
         cache = new LruCache<Long, Bitmap>((int) (Runtime.getRuntime().maxMemory() / 1024 / 8)) {
             @Override protected int sizeOf(Long k, Bitmap v) { return v.getByteCount() / 1024; }
@@ -150,7 +154,7 @@ public class MainActivity extends Activity {
         root.addView(buildGallery(), new FrameLayout.LayoutParams(-1, -1));
         root.addView(buildEditor(), new FrameLayout.LayoutParams(-1, -1));
         peek = new ImageView(this);
-        peek.setBackgroundColor(0xF2000000);
+        peek.setBackgroundColor(0xF516203B);
         peek.setScaleType(ImageView.ScaleType.FIT_CENTER);
         peek.setVisibility(View.GONE);
         root.addView(peek, new FrameLayout.LayoutParams(-1, -1));
@@ -248,13 +252,14 @@ public class MainActivity extends Activity {
         cancelSelBtn = iconBtn(R.drawable.ic_close, "Batal pilihan", BTN);
         cancelSelBtn.setOnClickListener(v -> setSelecting(false));
         top.addView(cancelSelBtn);
-        galTitle = text("FotoNix", 21, Color.WHITE, true);
+        galTitle = text("FOTONIX", 17, Color.WHITE, true);
+        galTitle.setLetterSpacing(0.08f);
         galTitle.setPadding(px(10), 0, px(10), 0);
         top.addView(galTitle, new LinearLayout.LayoutParams(0, -2, 1));
         selBtn = iconBtn(R.drawable.ic_select, "Pilih gambar", BTN);
         selBtn.setOnClickListener(v -> setSelecting(true));
         top.addView(selBtn);
-        delBtn = iconBtn(R.drawable.ic_delete, "Padam", 0xFFD93025);
+        delBtn = iconBtn(R.drawable.ic_delete, "Padam", CORAL);
         delBtn.setOnClickListener(v -> deleteSelected());
         top.addView(delBtn);
         ImageView pick = iconBtn(R.drawable.ic_folder, "Pilih dari fail", BTN);
@@ -290,7 +295,7 @@ public class MainActivity extends Activity {
         grid.setHorizontalSpacing(px(2));
         grid.setVerticalSpacing(px(2));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
-        grid.setSelector(new android.graphics.drawable.ColorDrawable(0x334DA3FF));
+        grid.setSelector(new android.graphics.drawable.ColorDrawable(0x3300ABAC));
         adapter = new GalleryAdapter();
         grid.setAdapter(adapter);
         grid.setOnItemClickListener((parent, view, pos, id) -> {
@@ -333,7 +338,7 @@ public class MainActivity extends Activity {
         permBtn.setText("Beri Kebenaran");
         permBtn.setAllCaps(false);
         permBtn.setTextColor(Color.WHITE);
-        permBtn.setBackground(round(0xFF1967D2, 12));
+        permBtn.setBackground(round(CORAL, RADIUS));
         permBtn.setVisibility(View.GONE);
         permBtn.setOnClickListener(v -> {
             if (Build.VERSION.SDK_INT >= 23 && askedOnce && !shouldShowRequestPermissionRationale(perms()[0])) {
@@ -399,10 +404,10 @@ public class MainActivity extends Activity {
                 cell = new FrameLayout(MainActivity.this);
                 iv = new ImageView(MainActivity.this);
                 iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                iv.setBackgroundColor(0xFF22262D);
+                iv.setBackgroundColor(BAR);
                 cell.addView(iv, new FrameLayout.LayoutParams(-1, -1));
                 dim = new View(MainActivity.this);
-                dim.setBackgroundColor(0x664DA3FF);
+                dim.setBackgroundColor(0x6600ABAC);
                 cell.addView(dim, new FrameLayout.LayoutParams(-1, -1));
                 badge = new TextView(MainActivity.this);
                 badge.setGravity(Gravity.CENTER);
@@ -424,7 +429,7 @@ public class MainActivity extends Activity {
             if (selecting) {
                 GradientDrawable g = new GradientDrawable();
                 g.setShape(GradientDrawable.OVAL);
-                g.setColor(sel ? 0xFF1E63E9 : 0x55000000);
+                g.setColor(sel ? ACCENT : 0x5516203B);
                 g.setStroke(px(2), Color.WHITE);
                 badge.setBackground(g);
                 badge.setText(sel ? "✓" : "");
@@ -543,7 +548,7 @@ public class MainActivity extends Activity {
     }
 
     private void updateSelTitle() {
-        galTitle.setText(selecting ? selected.size() + " dipilih" : "FotoNix");
+        galTitle.setText(selecting ? selected.size() + " DIPILIH" : "FOTONIX");
         delBtn.setAlpha(selected.isEmpty() ? 0.4f : 1f);
     }
 
@@ -712,11 +717,10 @@ public class MainActivity extends Activity {
         info.addView(nameLbl);
         info.addView(metaLbl);
         top.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
-        editDelBtn = iconBtn(R.drawable.ic_delete, "Padam gambar ini", 0xFF3A2328);
-        editDelBtn.setColorFilter(0xFFFF6B6B);
+        editDelBtn = iconBtn(R.drawable.ic_delete, "Padam gambar ini", CORAL);
         editDelBtn.setOnClickListener(v -> deleteCurrent());
         top.addView(editDelBtn);
-        saveBtn = iconBtn(R.drawable.ic_save, "Simpan", 0xFF1E8E3E);
+        saveBtn = iconBtn(R.drawable.ic_save, "Simpan", TEAL_BTN);
         ((LinearLayout.LayoutParams) saveBtn.getLayoutParams()).leftMargin = px(10);
         saveBtn.setOnClickListener(v -> save());
         top.addView(saveBtn);
@@ -746,6 +750,8 @@ public class MainActivity extends Activity {
         briPanel.addView(briLbl);
         bri = new SeekBar(this);
         bri.setMax(180);
+        bri.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        bri.setThumbTintList(android.content.res.ColorStateList.valueOf(TEAL_BTN));
         bri.setProgress(80);
         bri.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onProgressChanged(SeekBar s, int v, boolean u) {
@@ -761,8 +767,7 @@ public class MainActivity extends Activity {
         cropPanel = panel();
         ImageView cancel = iconBtn(R.drawable.ic_close, "Batal", BTN);
         cancel.setOnClickListener(v -> cancelCrop());
-        ImageView apply = iconBtn(R.drawable.ic_check, "Pangkas", 0xFFF9AB00);
-        apply.setColorFilter(Color.BLACK);
+        ImageView apply = iconBtn(R.drawable.ic_check, "Pangkas", TEAL_BTN);
         apply.setOnClickListener(v -> {
             if (!editor.applyCrop()) toast("Kawasan pangkas terlalu kecil");
             setTool(T_NONE);
@@ -779,17 +784,20 @@ public class MainActivity extends Activity {
         // Bar alat bawah: Crop, Conteng, Rotate, Kecerahan
         LinearLayout toolBar = new LinearLayout(this);
         toolBar.setBackgroundColor(BAR);
-        toolBar.setPadding(px(8), px(10), px(8), px(14));
+        toolBar.setPadding(0, 0, 0, px(6));
         int[] icons = {R.drawable.ic_crop, R.drawable.ic_pen, R.drawable.ic_rotate, R.drawable.ic_brightness};
         String[] labels = {"Pangkas", "Conteng", "Putar", "Kecerahan"};
         for (int i = 0; i < 4; i++) {
             tools[i] = tool(icons[i], labels[i]);
             toolBar.addView(tools[i], new LinearLayout.LayoutParams(0, -2, 1));
+            toolLines[i] = new View(this);
+            tools[i].addView(toolLines[i], 0, new LinearLayout.LayoutParams(-1, px(3)));   // garis aktif teal di atas
         }
         // titik kecil di bawah ikon pen menunjukkan warna semasa
         penDot = new View(this);
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(px(8), px(8));
-        dlp.topMargin = px(3);
+        dlp.topMargin = -px(8);
+        dlp.bottomMargin = px(4);
         tools[1].addView(penDot, dlp);
         tools[0].setOnClickListener(v -> {
             if (activeTool == T_CROP) return;
@@ -835,9 +843,10 @@ public class MainActivity extends Activity {
         int[] map = {T_CROP, T_DRAW, T_NONE, T_BRI};
         for (int i = 0; i < 4; i++) {
             boolean on = map[i] == t && t != T_NONE;
-            ImageView ic = (ImageView) tools[i].getChildAt(0);
-            ic.setBackground(on ? oval(ACCENT) : null);
-            ic.setColorFilter(on ? 0xFF0B1A2E : 0xFFE8EAED);
+            ImageView ic = (ImageView) tools[i].getChildAt(1);
+            tools[i].setBackgroundColor(on ? BTN : 0);
+            ic.setColorFilter(on ? Color.WHITE : 0xFFB8BFD3);
+            toolLines[i].setBackgroundColor(on ? ACCENT : 0);
         }
     }
 
@@ -855,7 +864,7 @@ public class MainActivity extends Activity {
             GradientDrawable g = new GradientDrawable();
             g.setShape(GradientDrawable.OVAL);
             g.setColor(PEN_COLORS[i]);
-            g.setStroke(px(i == idx ? 3 : 1), i == idx ? Color.WHITE : 0xFF555B63);
+            g.setStroke(px(i == idx ? 3 : 1), i == idx ? ACCENT : MUTED);
             dots[i].setBackground(g);
         }
     }
@@ -1083,7 +1092,7 @@ public class MainActivity extends Activity {
 
     private LinearLayout panel() {
         LinearLayout l = new LinearLayout(this);
-        l.setBackgroundColor(0xFF20252C);
+        l.setBackgroundColor(INPUT);
         l.setGravity(Gravity.CENTER);
         l.setPadding(px(14), px(10), px(14), px(10));
         l.setVisibility(View.GONE);
@@ -1097,10 +1106,10 @@ public class MainActivity extends Activity {
         l.setContentDescription(label);
         ImageView ic = new ImageView(this);
         ic.setImageResource(icon);
-        ic.setColorFilter(0xFFE8EAED);
+        ic.setColorFilter(0xFFB8BFD3);
         ic.setScaleType(ImageView.ScaleType.CENTER);
         ic.setContentDescription(label);
-        l.addView(ic, new LinearLayout.LayoutParams(px(52), px(52)));
+        l.addView(ic, new LinearLayout.LayoutParams(px(52), px(54)));
         l.setOnLongClickListener(v -> { toast(label); return true; });
         return l;
     }
@@ -1117,7 +1126,7 @@ public class MainActivity extends Activity {
         t.setText(s);
         t.setTextSize(sp);
         t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+        if (bold) t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         return t;
     }
 
@@ -1130,7 +1139,7 @@ public class MainActivity extends Activity {
         b.setClickable(true);
         b.setOnLongClickListener(v -> { toast(label); return true; });
         b.setBackground(new android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(0x33FFFFFF), round(color, 14), null));
+                android.content.res.ColorStateList.valueOf(0x33FFFFFF), round(color, RADIUS), null));
         b.setLayoutParams(new LinearLayout.LayoutParams(px(46), px(46)));
         return b;
     }
