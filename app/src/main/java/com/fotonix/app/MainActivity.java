@@ -2,6 +2,7 @@ package com.fotonix.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.PendingIntent;
 import android.content.ClipData;
 import android.content.ContentUris;
 import android.content.ContentValues;
@@ -48,12 +49,13 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
 
-    private static final int REQ_PERM = 10, REQ_PICK = 11;
+    private static final int REQ_PERM = 10, REQ_PICK = 11, REQ_DELETE = 12;
     private static final int PREVIEW_MAX = 2048;
     private static final int BG = 0xFF111418, BAR = 0xFF1A1E24, BTN = 0xFF2A2F37, ACCENT = 0xFF4DA3FF, MUTED = 0xFF9AA0A6;
     private static final int[] PEN_COLORS = {0xFFE53935, 0xFF1E63E9, 0xFF000000};
@@ -74,6 +76,16 @@ public class MainActivity extends Activity {
     private GalleryAdapter adapter;
     private LruCache<Long, Bitmap> cache;
     private boolean askedOnce;
+    private TextView galTitle;
+    private Button selBtn, pickBtn, cancelSelBtn, delBtn;
+    private boolean selecting;
+    private final HashSet<Long> selected = new HashSet<>();
+    private ArrayList<Long> pendingDelete = new ArrayList<>();
+
+    // Intai (tekan lama)
+    private ImageView peek;
+    private boolean peeking;
+    private long peekId = -1;
 
     // Penyunting
     private LinearLayout editorRoot, colorPanel, briPanel, cropPanel;
@@ -104,6 +116,11 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(BG);
         root.addView(buildGallery(), new FrameLayout.LayoutParams(-1, -1));
         root.addView(buildEditor(), new FrameLayout.LayoutParams(-1, -1));
+        peek = new ImageView(this);
+        peek.setBackgroundColor(0xF2000000);
+        peek.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        peek.setVisibility(View.GONE);
+        root.addView(peek, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
 
         Uri shared = extractUri(getIntent());
@@ -136,6 +153,8 @@ public class MainActivity extends Activity {
             doc = null;
             showGallery();
             if (hasPerm()) loadGallery();
+        } else if (selecting) {
+            setSelecting(false);
         } else super.onBackPressed();
     }
 
@@ -193,9 +212,22 @@ public class MainActivity extends Activity {
         galleryRoot.setOrientation(LinearLayout.VERTICAL);
 
         LinearLayout top = bar();
-        TextView title = text("FotoNix", 21, Color.WHITE, true);
-        top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        cancelSelBtn = iconBtn("✕", "Batal pilihan", BTN);
+        cancelSelBtn.setOnClickListener(v -> setSelecting(false));
+        top.addView(cancelSelBtn);
+        galTitle = text("FotoNix", 21, Color.WHITE, true);
+        galTitle.setPadding(px(10), 0, px(10), 0);
+        top.addView(galTitle, new LinearLayout.LayoutParams(0, -2, 1));
+        selBtn = iconBtn("☑", "Pilih gambar", BTN);
+        selBtn.setOnClickListener(v -> setSelecting(true));
+        top.addView(selBtn);
+        delBtn = iconBtn("🗑", "Padam", 0xFFD93025);
+        delBtn.setOnClickListener(v -> deleteSelected());
+        top.addView(delBtn);
         Button pick = iconBtn("📂", "Pilih dari fail", BTN);
+        pickBtn = pick;
+        ((LinearLayout.LayoutParams) pick.getLayoutParams()).leftMargin = px(8);
+        ((LinearLayout.LayoutParams) delBtn.getLayoutParams()).leftMargin = px(8);
         pick.setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_GET_CONTENT);
             i.setType("image/*");
@@ -204,6 +236,8 @@ public class MainActivity extends Activity {
         });
         top.addView(pick);
         galleryRoot.addView(top);
+        cancelSelBtn.setVisibility(View.GONE);
+        delBtn.setVisibility(View.GONE);
 
         FrameLayout body = new FrameLayout(this);
         grid = new GridView(this);
@@ -214,7 +248,22 @@ public class MainActivity extends Activity {
         grid.setSelector(new android.graphics.drawable.ColorDrawable(0x334DA3FF));
         adapter = new GalleryAdapter();
         grid.setAdapter(adapter);
-        grid.setOnItemClickListener((parent, view, pos, id) -> openAt(pos));
+        grid.setOnItemClickListener((parent, view, pos, id) -> {
+            if (selecting) toggleSelect(pos); else openAt(pos);
+        });
+        grid.setOnItemLongClickListener((parent, view, pos, id) -> { startPeek(pos); return true; });
+        grid.setOnTouchListener((v, ev) -> {
+            if (!peeking) return false;
+            int a = ev.getActionMasked();
+            if (a == android.view.MotionEvent.ACTION_UP || a == android.view.MotionEvent.ACTION_CANCEL) {
+                endPeek();
+                android.view.MotionEvent c = android.view.MotionEvent.obtain(ev);
+                c.setAction(android.view.MotionEvent.ACTION_CANCEL);
+                grid.onTouchEvent(c);
+                c.recycle();
+            }
+            return true;
+        });
         grid.addOnLayoutChangeListener((v, l, t, r, bt, ol, ot, or, ob) -> {
             if (bt - t != ob - ot) adapter.notifyDataSetChanged();
         });
@@ -285,24 +334,172 @@ public class MainActivity extends Activity {
         public long getItemId(int p) { return ids.get(p); }
 
         public View getView(int pos, View cv, ViewGroup parent) {
-            ImageView iv = (cv instanceof ImageView) ? (ImageView) cv : new ImageView(MainActivity.this);
+            FrameLayout cell;
+            ImageView iv;
+            View dim;
+            TextView badge;
+            if (cv instanceof FrameLayout) {
+                cell = (FrameLayout) cv;
+                iv = (ImageView) cell.getChildAt(0);
+                dim = cell.getChildAt(1);
+                badge = (TextView) cell.getChildAt(2);
+            } else {
+                cell = new FrameLayout(MainActivity.this);
+                iv = new ImageView(MainActivity.this);
+                iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                iv.setBackgroundColor(0xFF22262D);
+                cell.addView(iv, new FrameLayout.LayoutParams(-1, -1));
+                dim = new View(MainActivity.this);
+                dim.setBackgroundColor(0x664DA3FF);
+                cell.addView(dim, new FrameLayout.LayoutParams(-1, -1));
+                badge = new TextView(MainActivity.this);
+                badge.setGravity(Gravity.CENTER);
+                badge.setTextColor(Color.WHITE);
+                badge.setTextSize(14);
+                badge.setTypeface(Typeface.DEFAULT_BOLD);
+                FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(px(26), px(26), Gravity.TOP | Gravity.END);
+                blp.setMargins(0, px(6), px(6), 0);
+                cell.addView(badge, blp);
+            }
             int h = grid.getHeight() > 0 ? (grid.getHeight() - px(2) * 4) / 5 : getResources().getDisplayMetrics().heightPixels / 6;
-            iv.setLayoutParams(new AbsListView.LayoutParams(-1, h));
-            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            iv.setBackgroundColor(0xFF22262D);
+            cell.setLayoutParams(new AbsListView.LayoutParams(-1, h));
+
             final long id = ids.get(pos);
-            iv.setTag(id);
+            boolean sel = selected.contains(id);
+            dim.setVisibility(sel ? View.VISIBLE : View.GONE);
+            if (selecting) {
+                GradientDrawable g = new GradientDrawable();
+                g.setShape(GradientDrawable.OVAL);
+                g.setColor(sel ? 0xFF1E63E9 : 0x55000000);
+                g.setStroke(px(2), Color.WHITE);
+                badge.setBackground(g);
+                badge.setText(sel ? "✓" : "");
+                badge.setVisibility(View.VISIBLE);
+            } else badge.setVisibility(View.GONE);
+
+            final ImageView img = iv;
+            img.setTag(id);
             Bitmap bm = cache.get(id);
-            iv.setImageBitmap(bm);
+            img.setImageBitmap(bm);
             if (bm == null) pool.execute(() -> {
-                if (!Long.valueOf(id).equals(iv.getTag())) return;
+                if (!Long.valueOf(id).equals(img.getTag())) return;
                 Bitmap t = loadThumb(id);
                 if (t == null) return;
                 cache.put(id, t);
-                ui.post(() -> { if (Long.valueOf(id).equals(iv.getTag())) iv.setImageBitmap(t); });
+                ui.post(() -> { if (Long.valueOf(id).equals(img.getTag())) img.setImageBitmap(t); });
             });
-            return iv;
+            return cell;
         }
+    }
+
+    // ================= Pilih & Padam =================
+
+    private void setSelecting(boolean on) {
+        selecting = on;
+        if (!on) selected.clear();
+        cancelSelBtn.setVisibility(on ? View.VISIBLE : View.GONE);
+        delBtn.setVisibility(on ? View.VISIBLE : View.GONE);
+        selBtn.setVisibility(on ? View.GONE : View.VISIBLE);
+        pickBtn.setVisibility(on ? View.GONE : View.VISIBLE);
+        updateSelTitle();
+        adapter.notifyDataSetChanged();
+        if (on) askManageMediaOnce();
+    }
+
+    private void updateSelTitle() {
+        galTitle.setText(selecting ? selected.size() + " dipilih" : "FotoNix");
+        delBtn.setAlpha(selected.isEmpty() ? 0.4f : 1f);
+    }
+
+    private void toggleSelect(int pos) {
+        long id = ids.get(pos);
+        if (!selected.remove(id)) selected.add(id);
+        updateSelTitle();
+        adapter.notifyDataSetChanged();
+    }
+
+    /** Android 12+: minta akses "Pengurusan media" sekali supaya padam tanpa pengesahan sistem. */
+    private void askManageMediaOnce() {
+        if (Build.VERSION.SDK_INT < 31 || MediaStore.canManageMedia(this)) return;
+        SharedPreferences p = getSharedPreferences("fotonix", MODE_PRIVATE);
+        if (p.getBoolean("askedManageMedia", false)) return;
+        p.edit().putBoolean("askedManageMedia", true).apply();
+        new AlertDialog.Builder(this)
+                .setTitle("Padam tanpa pengesahan")
+                .setMessage("Supaya gambar dipadam terus tanpa tetingkap pengesahan Android, benarkan FotoNix dalam tetapan \"Pengurusan media\".")
+                .setPositiveButton("Buka Tetapan", (d, w) -> {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_REQUEST_MANAGE_MEDIA, Uri.fromParts("package", getPackageName(), null)));
+                    } catch (Exception e) { toast("Tetapan tidak ditemui"); }
+                })
+                .setNegativeButton("Kemudian", null)
+                .show();
+    }
+
+    private void deleteSelected() {
+        if (selected.isEmpty()) { toast("Pilih gambar dahulu"); return; }
+        pendingDelete = new ArrayList<>(selected);
+        final ArrayList<Uri> uris = new ArrayList<>();
+        for (long id : pendingDelete) uris.add(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id));
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                // Dipindah ke tong sampah sistem (dipadam kekal oleh Android selepas 30 hari)
+                PendingIntent pi = MediaStore.createTrashRequest(getContentResolver(), uris, true);
+                startIntentSenderForResult(pi.getIntentSender(), REQ_DELETE, null, 0, 0, 0);
+            } catch (Exception e) {
+                toast("Gagal padam: " + e.getMessage());
+            }
+            return;
+        }
+        pool.execute(() -> {
+            final ArrayList<Long> done = new ArrayList<>();
+            for (int i = 0; i < uris.size(); i++) {
+                try { if (getContentResolver().delete(uris.get(i), null, null) > 0) done.add(pendingDelete.get(i)); }
+                catch (Exception ignored) {}
+            }
+            ui.post(() -> removeIds(done));
+        });
+    }
+
+    private void removeIds(ArrayList<Long> gone) {
+        HashSet<Long> g = new HashSet<>(gone);
+        for (int i = ids.size() - 1; i >= 0; i--) {
+            if (g.contains(ids.get(i))) { cache.remove(ids.get(i)); ids.remove(i); names.remove(i); }
+        }
+        toast(gone.size() + " gambar dipadam");
+        setSelecting(false);
+    }
+
+    // ================= Intai: tekan lama =================
+
+    private void startPeek(int pos) {
+        if (pos < 0 || pos >= ids.size()) return;
+        final long id = ids.get(pos);
+        peeking = true;
+        peekId = id;
+        peek.setImageBitmap(cache.get(id));
+        peek.setAlpha(0f);
+        peek.setVisibility(View.VISIBLE);
+        peek.animate().alpha(1f).setDuration(120).start();
+        final int w = getResources().getDisplayMetrics().widthPixels, h = getResources().getDisplayMetrics().heightPixels;
+        pool.execute(() -> {
+            Bitmap big = null;
+            Uri u = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+            try {
+                if (Build.VERSION.SDK_INT >= 29) big = getContentResolver().loadThumbnail(u, new Size(w, h), null);
+                else big = decode(u, true, null);
+            } catch (Throwable ignored) {}
+            final Bitmap b = big;
+            if (b != null) ui.post(() -> { if (peeking && peekId == id) peek.setImageBitmap(b); });
+        });
+    }
+
+    private void endPeek() {
+        peeking = false;
+        peekId = -1;
+        peek.animate().cancel();
+        peek.setVisibility(View.GONE);
+        peek.setImageDrawable(null);
     }
 
     private Bitmap loadThumb(long id) {
@@ -320,6 +517,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_DELETE) {
+            if (res == RESULT_OK) removeIds(pendingDelete);
+            else toast("Padam dibatalkan");
+            return;
+        }
         if (req == REQ_PICK && res == RESULT_OK && data != null && data.getData() != null) {
             curIndex = -1;
             openEditor(data.getData(), null);
