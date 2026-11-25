@@ -67,7 +67,7 @@ public class EditorView extends View {
         thirds.setColor(0x80FFFFFF);
         thirds.setStrokeWidth(1f * dp);
         handle.setStyle(Paint.Style.STROKE);
-        handle.setColor(Color.WHITE);
+        handle.setColor(0xFF00C1BB);   // teal skill-phone-dark
         handle.setStrokeWidth(4f * dp);
         handle.setStrokeCap(Paint.Cap.SQUARE);
         gestures = new GestureDetector(c, new GestureDetector.SimpleOnGestureListener() {
