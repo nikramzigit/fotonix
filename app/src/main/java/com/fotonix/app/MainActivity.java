@@ -23,7 +23,6 @@ import android.provider.OpenableColumns;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
-import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -39,15 +38,15 @@ public class MainActivity extends Activity {
     private static final int PICK = 1001;
     private static final int MAX_DIM = 2048;
 
-    private static final int BG = 0xFF111418, BAR = 0xFF1A1E24, BTN = 0xFF2A2F37, ACCENT = 0xFF4DA3FF;
+    private static final int BG = 0xFF111418, BAR = 0xFF1A1E24, BTN = 0xFF2A2F37;
     private static final int RED = 0xFFE53935, BLACK = 0xFF000000, BLUE = 0xFF1E63E9;
 
     private EditorView editor;
     private TextView title, fileLbl, briLbl, emptyLbl;
     private SeekBar bri;
-    private Button btnDraw, btnCrop, btnApply, btnReady;
+    private Button btnCrop, btnReady;
     private View[] pens;
-    private final View[] needImage = new View[7];
+    private final View[] needImage = new View[5];
     private String imgName = "imej";
     private float dp;
 
@@ -128,76 +127,71 @@ public class MainActivity extends Activity {
         briRow.addView(bri, new LinearLayout.LayoutParams(0, -2, 1));
         root.addView(briRow);
 
-        // Bar alat
-        HorizontalScrollView hs = new HorizontalScrollView(this);
-        hs.setBackgroundColor(BAR);
-        hs.setHorizontalScrollBarEnabled(false);
+        // Bar alat: ikon sahaja, satu baris, lebar sama rata
         LinearLayout bar = new LinearLayout(this);
+        bar.setBackgroundColor(BAR);
         bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(px(8), px(8), px(8), px(10));
+        bar.setPadding(px(4), px(8), px(4), px(12));
 
-        Button open = btn("Buka", 0xFF1967D2);
+        Button open = icon("📂", "Buka imej", 0xFF1967D2);
         open.setOnClickListener(v -> pickImage());
-        bar.addView(open);
 
-        pens = new View[]{pen(RED), pen(BLACK), pen(BLUE)};
-        for (View p : pens) bar.addView(p);
+        pens = new View[]{pen(RED, "Pen merah"), pen(BLACK, "Pen hitam"), pen(BLUE, "Pen biru")};
         selectPen(0);
 
-        btnDraw = btn("✏ Conteng", BTN);
-        btnDraw.setOnClickListener(v -> setMode(EditorView.MODE_DRAW));
-        Button undo = btn("↩ Undur", BTN);
+        Button undo = icon("↩", "Undur", BTN);
         undo.setOnClickListener(v -> { if (!editor.undo()) toast("Tiada tindakan untuk diundur"); });
-        Button rot = btn("⟳ Putar", BTN);
+        Button rot = icon("↻", "Putar 90°", BTN);
         rot.setOnClickListener(v -> editor.rotate());
-        btnCrop = btn("✂ Pangkas", BTN);
-        btnCrop.setOnClickListener(v -> setMode(editor.getMode() == EditorView.MODE_CROP ? EditorView.MODE_DRAW : EditorView.MODE_CROP));
-        btnApply = btn("✔ Guna", 0xFFF9AB00);
-        btnApply.setTextColor(Color.BLACK);
-        btnApply.setVisibility(View.GONE);
-        btnApply.setOnClickListener(v -> {
+        btnCrop = icon("✂", "Pangkas", BTN);
+        btnCrop.setOnClickListener(v -> {
+            if (editor.getMode() != EditorView.MODE_CROP) { setMode(EditorView.MODE_CROP); return; }
             if (editor.applyCrop()) { setMode(EditorView.MODE_DRAW); toast("Imej telah dipangkas"); }
             else toast("Seret pada imej untuk pilih kawasan dahulu");
         });
-        btnReady = btn("⬇ Ready", 0xFF1E8E3E);
+        btnReady = icon("⬇", "Ready: simpan JPG", 0xFF1E8E3E);
         btnReady.setOnClickListener(v -> save());
 
-        for (View v : new View[]{btnDraw, undo, rot, btnCrop, btnApply, btnReady}) bar.addView(v);
-        View[] gated = {btnDraw, undo, rot, btnCrop, btnReady, bri, btnApply};
+        for (View v : new View[]{open, pens[0], pens[1], pens[2], undo, rot, btnCrop, btnReady}) {
+            LinearLayout cell = new LinearLayout(this);
+            cell.setGravity(Gravity.CENTER);
+            cell.addView(v);
+            bar.addView(cell, new LinearLayout.LayoutParams(0, -2, 1));
+        }
+        View[] gated = {undo, rot, btnCrop, btnReady, bri};
         System.arraycopy(gated, 0, needImage, 0, gated.length);
         setEnabledAll(false);
 
-        hs.addView(bar);
-        root.addView(hs);
+        root.addView(bar);
         setContentView(root);
     }
 
-    private Button btn(String text, int color) {
+    private Button icon(String glyph, String label, int color) {
         Button b = new Button(this);
-        b.setText(text);
+        b.setText(glyph);
         b.setAllCaps(false);
         b.setTextColor(Color.WHITE);
-        b.setTextSize(14);
-        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTextSize(20);
+        b.setGravity(Gravity.CENTER);
+        b.setPadding(0, 0, 0, 0);
         b.setMinWidth(0); b.setMinimumWidth(0);
-        b.setPadding(px(14), 0, px(14), 0);
+        b.setMinHeight(0); b.setMinimumHeight(0);
+        b.setContentDescription(label);
+        b.setOnLongClickListener(v -> { toast(label); return true; });
         GradientDrawable g = new GradientDrawable();
         g.setColor(color);
-        g.setCornerRadius(px(10));
+        g.setCornerRadius(px(12));
         b.setBackground(g);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, px(44));
-        lp.setMargins(px(3), 0, px(3), 0);
-        b.setLayoutParams(lp);
+        b.setLayoutParams(new LinearLayout.LayoutParams(px(42), px(42)));
         b.setStateListAnimator(null);
         return b;
     }
 
-    private View pen(int color) {
+    private View pen(int color, String label) {
         View v = new View(this);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(40), px(40));
-        lp.setMargins(px(4), 0, px(4), 0);
-        v.setLayoutParams(lp);
+        v.setLayoutParams(new LinearLayout.LayoutParams(px(36), px(36)));
         v.setTag(color);
+        v.setContentDescription(label);
         v.setOnClickListener(x -> {
             for (int i = 0; i < pens.length; i++) if (pens[i] == x) selectPen(i);
             if (editor.hasImage()) setMode(EditorView.MODE_DRAW);
@@ -219,15 +213,11 @@ public class MainActivity extends Activity {
 
     private void setMode(int m) {
         editor.setMode(m);
-        highlight(btnDraw, m == EditorView.MODE_DRAW);
-        highlight(btnCrop, m == EditorView.MODE_CROP);
-        btnApply.setVisibility(m == EditorView.MODE_CROP ? View.VISIBLE : View.GONE);
-        if (m == EditorView.MODE_CROP) toast("Seret pada imej untuk pilih kawasan pangkas");
-    }
-
-    private void highlight(Button b, boolean on) {
-        GradientDrawable g = (GradientDrawable) b.getBackground();
-        g.setStroke(on ? px(2) : 0, ACCENT);
+        boolean crop = m == EditorView.MODE_CROP;
+        btnCrop.setText(crop ? "✔" : "✂");
+        ((GradientDrawable) btnCrop.getBackground()).setColor(crop ? 0xFFF9AB00 : BTN);
+        btnCrop.setTextColor(crop ? Color.BLACK : Color.WHITE);
+        if (crop) toast("Seret kawasan, kemudian tekan ✔ untuk pangkas. Tekan pen untuk batal.");
     }
 
     private void setEnabledAll(boolean on) {
