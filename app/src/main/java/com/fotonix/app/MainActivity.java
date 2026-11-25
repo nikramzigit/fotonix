@@ -54,6 +54,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Locale;
+import java.text.SimpleDateFormat;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -366,13 +369,22 @@ public class MainActivity extends Activity {
             final ArrayList<Long> li = new ArrayList<>();
             final ArrayList<String> ln = new ArrayList<>();
             String[] proj = {MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME};
-            try (Cursor c = getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, proj,
-                    null, null, MediaStore.Images.Media.DATE_ADDED + " DESC")) {
-                if (c != null) while (c.moveToNext() && li.size() < 1000) {
-                    li.add(c.getLong(0));
-                    ln.add(c.getString(1));
-                }
-            } catch (Exception ignored) {}
+            // Susun ikut tarikh gambar diambil, supaya hasil suntingan duduk di sebelah gambar asal
+            String[] orders = {
+                    "COALESCE(" + MediaStore.Images.Media.DATE_TAKEN + ", " + MediaStore.Images.Media.DATE_ADDED + " * 1000) DESC",
+                    MediaStore.Images.Media.DATE_TAKEN + " DESC, " + MediaStore.Images.Media.DATE_ADDED + " DESC",
+                    MediaStore.Images.Media.DATE_ADDED + " DESC"};
+            for (String order : orders) {
+                li.clear(); ln.clear();
+                try (Cursor c = getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, proj, null, null, order)) {
+                    if (c == null) continue;
+                    while (c.moveToNext() && li.size() < 1000) {
+                        li.add(c.getLong(0));
+                        ln.add(c.getString(1));
+                    }
+                    break;
+                } catch (Exception ignored) {}
+            }
             ui.post(() -> {
                 ids.clear(); ids.addAll(li);
                 names.clear(); names.addAll(ln);
@@ -1022,6 +1034,7 @@ public class MainActivity extends Activity {
         final float k = editor.getBrightness();
         final Uri uri = curUri;
         final String fileName = nextNumber() + "_" + curName + ".jpg";
+        final HashMap<String, String> exif = readExif(uri);
         pool.execute(() -> {
             String msg;
             Bitmap out = null;
@@ -1041,7 +1054,8 @@ public class MainActivity extends Activity {
                 Canvas c = new Canvas(out);
                 if (out.hasAlpha()) c.drawColor(Color.WHITE, PorterDuff.Mode.DST_OVER);
                 snap.drawStrokes(c, s);
-                writeJpeg(out, fileName);
+                long taken = originalTaken(uri, exif);
+                writeJpeg(out, fileName, taken > 0 ? taken + 1000 : 0, exif);   // +1 saat: betul-betul di sebelah gambar asal
                 msg = "Disimpan: Pictures/FotoNix/" + fileName + "  (" + out.getWidth() + "×" + out.getHeight() + ")"
                         + (half ? "\nMemori tidak cukup, disimpan pada separuh resolusi." : "");
             } catch (Throwable e) {
@@ -1058,17 +1072,79 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void writeJpeg(Bitmap out, String fileName) throws Exception {
+    // Tag EXIF yang disalin daripada gambar asal (tarikh, kamera, lokasi)
+    private static final String[] EXIF_TAGS = {
+            "DateTimeOriginal", "DateTimeDigitized", "DateTime", "OffsetTime", "OffsetTimeOriginal", "OffsetTimeDigitized",
+            "SubSecTime", "SubSecTimeOriginal", "SubSecTimeDigitized", "Make", "Model",
+            "GPSLatitude", "GPSLatitudeRef", "GPSLongitude", "GPSLongitudeRef", "GPSAltitude", "GPSAltitudeRef",
+            "GPSDateStamp", "GPSTimeStamp"};
+
+    private HashMap<String, String> readExif(Uri uri) {
+        HashMap<String, String> m = new HashMap<>();
+        if (Build.VERSION.SDK_INT < 24) return m;
+        try (InputStream is = getContentResolver().openInputStream(uri)) {
+            ExifInterface x = new ExifInterface(is);
+            for (String t : EXIF_TAGS) {
+                String v = x.getAttribute(t);
+                if (v != null) m.put(t, v);
+            }
+        } catch (Exception ignored) {}
+        return m;
+    }
+
+    /** Masa gambar asal diambil (ms). 0 jika tidak diketahui. */
+    private long originalTaken(Uri uri, HashMap<String, String> exif) {
+        long t = 0;
+        try (Cursor c = getContentResolver().query(uri,
+                new String[]{MediaStore.Images.Media.DATE_TAKEN, MediaStore.Images.Media.DATE_MODIFIED}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                if (!c.isNull(0)) t = c.getLong(0);
+                if (t <= 0 && !c.isNull(1)) t = c.getLong(1) * 1000L;
+            }
+        } catch (Exception ignored) {}
+        if (t <= 0) {
+            String d = exif.get("DateTimeOriginal");
+            if (d == null) d = exif.get("DateTime");
+            if (d != null) {
+                try { t = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).parse(d).getTime(); }
+                catch (Exception ignored) {}
+            }
+        }
+        return t;
+    }
+
+    private void applyExif(ExifInterface x, HashMap<String, String> exif, long taken) throws Exception {
+        for (java.util.Map.Entry<String, String> e : exif.entrySet()) x.setAttribute(e.getKey(), e.getValue());
+        if (taken > 0) {
+            String d = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(new java.util.Date(taken));
+            x.setAttribute("DateTimeOriginal", d);
+            x.setAttribute("DateTimeDigitized", d);
+            x.setAttribute("DateTime", d);
+        }
+        x.setAttribute("Orientation", "1");   // putaran sudah dimasukkan ke dalam piksel
+        x.saveAttributes();
+    }
+
+    private void writeJpeg(Bitmap out, String fileName, long taken, HashMap<String, String> exif) throws Exception {
         if (Build.VERSION.SDK_INT >= 29) {
             ContentValues v = new ContentValues();
             v.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
             v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
             v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/FotoNix");
+            v.put(MediaStore.MediaColumns.IS_PENDING, 1);
+            if (taken > 0) v.put(MediaStore.Images.Media.DATE_TAKEN, taken);
             Uri u = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
             if (u == null) throw new Exception("tidak dapat cipta fail");
             try (OutputStream os = getContentResolver().openOutputStream(u)) {
                 out.compress(Bitmap.CompressFormat.JPEG, 100, os);
             }
+            try (android.os.ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(u, "rw")) {
+                if (pfd != null) applyExif(new ExifInterface(pfd.getFileDescriptor()), exif, taken);
+            } catch (Exception ignored) {}
+            ContentValues done = new ContentValues();
+            done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            if (taken > 0) done.put(MediaStore.Images.Media.DATE_TAKEN, taken);
+            getContentResolver().update(u, done, null, null);
         } else {
             File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "FotoNix");
             if (!dir.exists()) dir.mkdirs();
@@ -1076,6 +1152,8 @@ public class MainActivity extends Activity {
             try (FileOutputStream os = new FileOutputStream(f)) {
                 out.compress(Bitmap.CompressFormat.JPEG, 100, os);
             }
+            try { applyExif(new ExifInterface(f.getAbsolutePath()), exif, taken); } catch (Exception ignored) {}
+            if (taken > 0) f.setLastModified(taken);
             sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(f)));
         }
     }
