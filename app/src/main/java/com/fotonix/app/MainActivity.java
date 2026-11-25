@@ -1,6 +1,7 @@
 package com.fotonix.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ContentUris;
 import android.content.ContentValues;
@@ -87,6 +88,7 @@ public class MainActivity extends Activity {
     private String curName = "imej";
     private EditDoc doc;
     private boolean fromShare, saving;
+    private int curIndex = -1;   // kedudukan dalam galeri, -1 jika dari Kongsi / fail
 
     @Override
     protected void onCreate(Bundle b) {
@@ -212,8 +214,7 @@ public class MainActivity extends Activity {
         grid.setSelector(new android.graphics.drawable.ColorDrawable(0x334DA3FF));
         adapter = new GalleryAdapter();
         grid.setAdapter(adapter);
-        grid.setOnItemClickListener((parent, view, pos, id) ->
-                openEditor(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, ids.get(pos)), names.get(pos)));
+        grid.setOnItemClickListener((parent, view, pos, id) -> openAt(pos));
         grid.addOnLayoutChangeListener((v, l, t, r, bt, ol, ot, or, ob) -> {
             if (bt - t != ob - ot) adapter.notifyDataSetChanged();
         });
@@ -319,7 +320,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
-        if (req == REQ_PICK && res == RESULT_OK && data != null && data.getData() != null) openEditor(data.getData(), null);
+        if (req == REQ_PICK && res == RESULT_OK && data != null && data.getData() != null) {
+            curIndex = -1;
+            openEditor(data.getData(), null);
+        }
     }
 
     // ================= Penyunting =================
@@ -347,6 +351,7 @@ public class MainActivity extends Activity {
         editorRoot.addView(top);
 
         editor = new EditorView(this);
+        editor.setSwipeListener(this::swipe);
         editorRoot.addView(editor, new LinearLayout.LayoutParams(-1, 0, 1));
 
         // Panel warna
@@ -477,6 +482,37 @@ public class MainActivity extends Activity {
         } else if (drawIcon != null) drawIcon.setShadowLayer(0, 0, 0, 0);
     }
 
+    private void openAt(int pos) {
+        if (pos < 0 || pos >= ids.size()) return;
+        curIndex = pos;
+        openEditor(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, ids.get(pos)), names.get(pos));
+    }
+
+    /** dir = +1 gambar seterusnya, -1 gambar sebelumnya. */
+    private void swipe(int dir) {
+        if (curIndex < 0 || saving) return;
+        final int n = curIndex + dir;
+        if (n < 0 || n >= ids.size()) {
+            toast(dir > 0 ? "Ini gambar terakhir" : "Ini gambar pertama");
+            return;
+        }
+        if (editor.hasEdits()) {
+            new AlertDialog.Builder(this)
+                    .setMessage("Suntingan belum disimpan. Buang dan beralih ke gambar lain?")
+                    .setPositiveButton("Buang", (d, w) -> slideTo(n, dir))
+                    .setNegativeButton("Batal", null)
+                    .show();
+        } else slideTo(n, dir);
+    }
+
+    private void slideTo(int n, int dir) {
+        float w = editor.getWidth();
+        editor.animate().translationX(-dir * w).alpha(0f).setDuration(140).withEndAction(() -> {
+            editor.setTranslationX(dir * w * 0.35f);
+            openAt(n);
+        }).start();
+    }
+
     private void openEditor(Uri uri, String knownName) {
         galleryRoot.setVisibility(View.GONE);
         editorRoot.setVisibility(View.VISIBLE);
@@ -491,15 +527,19 @@ public class MainActivity extends Activity {
                     curUri = uri;
                     curName = name.replaceAll("\\.[^.]+$", "").replaceAll("[^\\w\\-]+", "_");
                     if (curName.isEmpty()) curName = "imej";
-                    nameLbl.setText(name + "  ·  " + dims[0] + "×" + dims[1]);
+                    nameLbl.setText((curIndex >= 0 ? (curIndex + 1) + "/" + ids.size() + "  ·  " : "")
+                            + name + "  ·  " + dims[0] + "×" + dims[1]);
                     doc = new EditDoc(dims[0], dims[1]);
                     editor.setSource(prev, doc, prev.getWidth() / (float) dims[0]);
                     bri.setProgress(80);
                     selectPen(0);
                     setTool(T_NONE);
+                    editor.animate().translationX(0f).alpha(1f).setDuration(180).start();
                 });
             } catch (Throwable t) {
                 ui.post(() -> {
+                    editor.setTranslationX(0f);
+                    editor.setAlpha(1f);
                     toast("Gagal buka imej: " + t.getMessage());
                     if (fromShare) finish(); else showGallery();
                 });
