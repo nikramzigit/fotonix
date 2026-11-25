@@ -62,7 +62,7 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
 
-    private static final int REQ_PERM = 10, REQ_PICK = 11, REQ_DELETE = 12;
+    private static final int REQ_PERM = 10, REQ_PICK = 11, REQ_DELETE = 12, REQ_MOVE = 13;
     private static final int PREVIEW_MAX = 2048;
     // Palet skill-phone-dark (flat: tiada bayang, tiada gradien)
     private static final int BG = 0xFF16203B, BAR = 0xFF324065, BTN = 0xFF4B597C, INPUT = 0xFF3E4B6E, DIVIDER = 0xFF2D3A5D;
@@ -87,7 +87,9 @@ public class MainActivity extends Activity {
     private LruCache<Long, Bitmap> cache;
     private boolean askedOnce;
     private TextView galTitle;
-    private ImageView selBtn, pickBtn, cancelSelBtn, delBtn;
+    private ImageView selBtn, pickBtn, cancelSelBtn, delBtn, moveBtn;
+    private String moveTarget, moveTargetName;
+    private ArrayList<Long> pendingMove = new ArrayList<>();
     private boolean selecting;
     private final HashSet<Long> selected = new HashSet<>();
     private ArrayList<Long> pendingDelete = new ArrayList<>();
@@ -262,6 +264,9 @@ public class MainActivity extends Activity {
         selBtn = iconBtn(R.drawable.ic_select, "Pilih gambar", BTN);
         selBtn.setOnClickListener(v -> setSelecting(true));
         top.addView(selBtn);
+        moveBtn = iconBtn(R.drawable.ic_move, "Pindah ke album", BTN);
+        moveBtn.setOnClickListener(v -> chooseAlbum());
+        top.addView(moveBtn);
         delBtn = iconBtn(R.drawable.ic_delete, "Padam", CORAL);
         delBtn.setOnClickListener(v -> deleteSelected());
         top.addView(delBtn);
@@ -279,6 +284,7 @@ public class MainActivity extends Activity {
         galleryRoot.addView(top);
         cancelSelBtn.setVisibility(View.GONE);
         delBtn.setVisibility(View.GONE);
+        moveBtn.setVisibility(View.GONE);
 
         FrameLayout body = new FrameLayout(this);
         grid = new GridView(this);
@@ -552,6 +558,7 @@ public class MainActivity extends Activity {
         if (!on) { selected.clear(); endDragSelect(); }
         cancelSelBtn.setVisibility(on ? View.VISIBLE : View.GONE);
         delBtn.setVisibility(on ? View.VISIBLE : View.GONE);
+        moveBtn.setVisibility(on ? View.VISIBLE : View.GONE);
         selBtn.setVisibility(on ? View.GONE : View.VISIBLE);
         pickBtn.setVisibility(on ? View.GONE : View.VISIBLE);
         updateSelTitle();
@@ -562,6 +569,7 @@ public class MainActivity extends Activity {
     private void updateSelTitle() {
         galTitle.setText(selecting ? selected.size() + " DIPILIH" : "FOTONIX");
         delBtn.setAlpha(selected.isEmpty() ? 0.4f : 1f);
+        moveBtn.setAlpha(selected.isEmpty() ? 0.4f : 1f);
     }
 
     private void toggleSelect(int pos) {
@@ -646,6 +654,137 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ================= Pindah ke album =================
+
+    /** Senarai album sedia ada (folder yang mengandungi gambar), paling banyak gambar di atas. */
+    private void chooseAlbum() {
+        if (selected.isEmpty()) { toast("Pilih gambar dahulu"); return; }
+        pool.execute(() -> {
+            final HashMap<String, Integer> count = new HashMap<>();
+            final HashMap<String, String> label = new HashMap<>();
+            String col = Build.VERSION.SDK_INT >= 29 ? MediaStore.MediaColumns.RELATIVE_PATH : MediaStore.MediaColumns.DATA;
+            try (Cursor c = getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    new String[]{col, MediaStore.Images.Media.BUCKET_DISPLAY_NAME}, null, null, null)) {
+                if (c != null) while (c.moveToNext()) {
+                    String path = c.getString(0);
+                    if (path == null) continue;
+                    if (Build.VERSION.SDK_INT < 29) path = relFromData(path);
+                    if (path == null) continue;
+                    Integer n = count.get(path);
+                    count.put(path, n == null ? 1 : n + 1);
+                    String b = c.getString(1);
+                    label.put(path, b != null ? b : path);
+                }
+            } catch (Exception ignored) {}
+            final ArrayList<String> paths = new ArrayList<>(count.keySet());
+            java.util.Collections.sort(paths, (x, y) -> count.get(y) - count.get(x));
+            ui.post(() -> {
+                String[] items = new String[paths.size() + 1];
+                items[0] = "＋  Album baharu…";
+                for (int i = 0; i < paths.size(); i++) {
+                    String pth = paths.get(i);
+                    items[i + 1] = label.get(pth) + "   (" + count.get(pth) + ")\n" + pth;
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle("Pindah " + selected.size() + " gambar ke…")
+                        .setItems(items, (d, w) -> {
+                            if (w == 0) newAlbumDialog();
+                            else startMove(paths.get(w - 1), label.get(paths.get(w - 1)));
+                        })
+                        .setNegativeButton("Batal", null)
+                        .show();
+            });
+        });
+    }
+
+    private String relFromData(String data) {
+        String root = Environment.getExternalStorageDirectory().getAbsolutePath() + "/";
+        int slash = data.lastIndexOf('/');
+        if (!data.startsWith(root) || slash < root.length()) return null;
+        return data.substring(root.length(), slash + 1);
+    }
+
+    private void newAlbumDialog() {
+        final android.widget.EditText in = new android.widget.EditText(this);
+        in.setHint("Nama album");
+        in.setSingleLine(true);
+        LinearLayout box = new LinearLayout(this);
+        box.setPadding(px(20), px(8), px(20), 0);
+        box.addView(in, new LinearLayout.LayoutParams(-1, -2));
+        new AlertDialog.Builder(this)
+                .setTitle("Album baharu")
+                .setView(box)
+                .setPositiveButton("Pindah", (d, w) -> {
+                    String name = in.getText().toString().trim().replaceAll("[\\\\/:*?\"<>|]+", "_");
+                    if (name.isEmpty()) { toast("Nama album kosong"); return; }
+                    startMove(Environment.DIRECTORY_PICTURES + "/" + name + "/", name);
+                })
+                .setNegativeButton("Batal", null)
+                .show();
+    }
+
+    private void startMove(String relPath, String name) {
+        moveTarget = relPath;
+        moveTargetName = name;
+        pendingMove = new ArrayList<>(selected);
+        if (Build.VERSION.SDK_INT >= 30) {
+            ArrayList<Uri> uris = new ArrayList<>();
+            for (long id : pendingMove) uris.add(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id));
+            try {
+                // Minta kebenaran ubah (tanpa tetingkap jika "Pengurusan media" dibenarkan)
+                PendingIntent pi = MediaStore.createWriteRequest(getContentResolver(), uris);
+                startIntentSenderForResult(pi.getIntentSender(), REQ_MOVE, null, 0, 0, 0);
+            } catch (Exception e) { toast("Gagal pindah: " + e.getMessage()); }
+        } else {
+            if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission("android.permission.WRITE_EXTERNAL_STORAGE") != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{"android.permission.WRITE_EXTERNAL_STORAGE"}, REQ_PERM);
+                toast("Beri kebenaran, kemudian cuba lagi");
+                return;
+            }
+            doMove();
+        }
+    }
+
+    /** Tukar folder gambar terus dalam MediaStore: tiada salinan, tarikh & kualiti kekal. */
+    private void doMove() {
+        final ArrayList<Long> list = new ArrayList<>(pendingMove);
+        final String target = moveTarget, tname = moveTargetName;
+        pool.execute(() -> {
+            int ok = 0;
+            for (long id : list) {
+                Uri u = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+                try {
+                    if (Build.VERSION.SDK_INT >= 29) {
+                        ContentValues v = new ContentValues();
+                        v.put(MediaStore.MediaColumns.RELATIVE_PATH, target);
+                        if (getContentResolver().update(u, v, null, null) > 0) ok++;
+                    } else {
+                        String data = null;
+                        try (Cursor c = getContentResolver().query(u, new String[]{MediaStore.MediaColumns.DATA}, null, null, null)) {
+                            if (c != null && c.moveToFirst()) data = c.getString(0);
+                        }
+                        if (data == null) continue;
+                        File src = new File(data);
+                        File dir = new File(Environment.getExternalStorageDirectory(), target);
+                        if (!dir.exists()) dir.mkdirs();
+                        File dst = new File(dir, src.getName());
+                        if (dst.exists() || !src.renameTo(dst)) continue;
+                        ContentValues v = new ContentValues();
+                        v.put(MediaStore.MediaColumns.DATA, dst.getAbsolutePath());
+                        getContentResolver().update(u, v, null, null);
+                        ok++;
+                    }
+                } catch (Exception ignored) {}
+            }
+            final int n = ok;
+            ui.post(() -> {
+                toast(n + " gambar dipindah ke " + tname + (n < list.size() ? "  (" + (list.size() - n) + " gagal)" : ""));
+                setSelecting(false);
+                loadGallery();
+            });
+        });
+    }
+
     // ================= Intai: tekan lama =================
 
     private void startPeek(int pos) {
@@ -693,6 +832,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_MOVE) {
+            if (res == RESULT_OK) doMove(); else toast("Pindah dibatalkan");
+            return;
+        }
         if (req == REQ_DELETE) {
             if (res == RESULT_OK) removeIds(pendingDelete);
             else { toast("Padam dibatalkan"); deleteFromEditor = false; selected.clear(); }
