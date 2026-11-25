@@ -9,6 +9,7 @@ import android.graphics.ColorMatrixColorFilter;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -42,6 +43,11 @@ public class EditorView extends View {
     private float strokeW, lastPX, lastPY;
     private boolean touching;
 
+    // Leret ke gambar sebelum / seterusnya
+    public interface SwipeListener { void onSwipe(int dir); }
+    private SwipeListener swipeListener;
+    private final GestureDetector gestures;
+
     // Pangkas
     private RectF crop;
     private boolean dL, dT, dR, dB, dMove;
@@ -64,6 +70,25 @@ public class EditorView extends View {
         handle.setColor(Color.WHITE);
         handle.setStrokeWidth(4f * dp);
         handle.setStrokeCap(Paint.Cap.SQUARE);
+        gestures = new GestureDetector(c, new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onDown(MotionEvent e) { return true; }
+            @Override public boolean onFling(MotionEvent e1, MotionEvent e2, float vx, float vy) {
+                if (e1 == null || swipeListener == null) return false;
+                float dx = e2.getX() - e1.getX(), dy = e2.getY() - e1.getY();
+                if (Math.abs(dx) > 60 * dp && Math.abs(dx) > Math.abs(dy) * 1.5f && Math.abs(vx) > 500) {
+                    swipeListener.onSwipe(dx < 0 ? 1 : -1);
+                    return true;
+                }
+                return false;
+            }
+        });
+    }
+
+    public void setSwipeListener(SwipeListener l) { swipeListener = l; }
+
+    /** Ada suntingan yang belum disimpan? */
+    public boolean hasEdits() {
+        return (doc != null && !doc.ops.isEmpty()) || Math.abs(brightness - 1f) > 0.001f;
     }
 
     // ================= API =================
@@ -214,7 +239,8 @@ public class EditorView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent e) {
-        if (base == null || mode == MODE_NONE) return false;
+        if (base == null) return false;
+        if (mode == MODE_NONE) return gestures.onTouchEvent(e);
         float[] p = {e.getX(), e.getY()};
         inverse.mapPoints(p);
         float bx = p[0], by = p[1];
