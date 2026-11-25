@@ -81,7 +81,7 @@ public class MainActivity extends Activity {
     private LruCache<Long, Bitmap> cache;
     private boolean askedOnce;
     private TextView galTitle;
-    private Button selBtn, pickBtn, cancelSelBtn, delBtn;
+    private ImageView selBtn, pickBtn, cancelSelBtn, delBtn;
     private boolean selecting;
     private final HashSet<Long> selected = new HashSet<>();
     private ArrayList<Long> pendingDelete = new ArrayList<>();
@@ -121,9 +121,11 @@ public class MainActivity extends Activity {
     // Penyunting
     private LinearLayout editorRoot, colorPanel, briPanel, cropPanel;
     private EditorView editor;
-    private TextView nameLbl, briLbl, drawIcon;
+    private TextView nameLbl, metaLbl, briLbl;
+    private View penDot;
+    private boolean deleteFromEditor;
     private SeekBar bri;
-    private Button saveBtn;
+    private ImageView saveBtn, editDelBtn;
     private LinearLayout[] tools = new LinearLayout[4];
     private View[] dots = new View[3];
     private int activeTool = T_NONE, penIdx = 0;
@@ -243,19 +245,19 @@ public class MainActivity extends Activity {
         galleryRoot.setOrientation(LinearLayout.VERTICAL);
 
         LinearLayout top = bar();
-        cancelSelBtn = iconBtn("✕", "Batal pilihan", BTN);
+        cancelSelBtn = iconBtn(R.drawable.ic_close, "Batal pilihan", BTN);
         cancelSelBtn.setOnClickListener(v -> setSelecting(false));
         top.addView(cancelSelBtn);
         galTitle = text("FotoNix", 21, Color.WHITE, true);
         galTitle.setPadding(px(10), 0, px(10), 0);
         top.addView(galTitle, new LinearLayout.LayoutParams(0, -2, 1));
-        selBtn = iconBtn("☑", "Pilih gambar", BTN);
+        selBtn = iconBtn(R.drawable.ic_select, "Pilih gambar", BTN);
         selBtn.setOnClickListener(v -> setSelecting(true));
         top.addView(selBtn);
-        delBtn = iconBtn("🗑", "Padam", 0xFFD93025);
+        delBtn = iconBtn(R.drawable.ic_delete, "Padam", 0xFFD93025);
         delBtn.setOnClickListener(v -> deleteSelected());
         top.addView(delBtn);
-        Button pick = iconBtn("📂", "Pilih dari fail", BTN);
+        ImageView pick = iconBtn(R.drawable.ic_folder, "Pilih dari fail", BTN);
         pickBtn = pick;
         ((LinearLayout.LayoutParams) pick.getLayoutParams()).leftMargin = px(8);
         ((LinearLayout.LayoutParams) delBtn.getLayoutParams()).leftMargin = px(8);
@@ -595,6 +597,26 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Padam gambar yang sedang dibuka, kemudian terus ke gambar seterusnya. */
+    private void deleteCurrent() {
+        if (curIndex < 0 || curIndex >= ids.size()) { toast("Hanya gambar dari galeri boleh dipadam di sini"); return; }
+        if (saving) return;
+        askManageMediaOnce();
+        deleteFromEditor = true;
+        selected.clear();
+        selected.add(ids.get(curIndex));
+        deleteSelected();
+    }
+
+    private void afterEditorDelete() {
+        deleteFromEditor = false;
+        if (ids.isEmpty()) { editor.clear(); doc = null; showGallery(); return; }
+        int n = Math.min(curIndex, ids.size() - 1);
+        editor.setTranslationX(editor.getWidth() * 0.35f);
+        editor.setAlpha(0f);
+        openAt(n);
+    }
+
     private void removeIds(ArrayList<Long> gone) {
         HashSet<Long> g = new HashSet<>(gone);
         for (int i = ids.size() - 1; i >= 0; i--) {
@@ -602,6 +624,9 @@ public class MainActivity extends Activity {
         }
         toast(gone.size() + " gambar dipadam");
         setSelecting(false);
+        if (deleteFromEditor) {
+            if (gone.isEmpty()) deleteFromEditor = false; else afterEditorDelete();
+        }
     }
 
     // ================= Intai: tekan lama =================
@@ -653,7 +678,7 @@ public class MainActivity extends Activity {
         super.onActivityResult(req, res, data);
         if (req == REQ_DELETE) {
             if (res == RESULT_OK) removeIds(pendingDelete);
-            else toast("Padam dibatalkan");
+            else { toast("Padam dibatalkan"); deleteFromEditor = false; selected.clear(); }
             return;
         }
         if (req == REQ_PICK && res == RESULT_OK && data != null && data.getData() != null) {
@@ -670,18 +695,29 @@ public class MainActivity extends Activity {
 
         // Bar atas: Undur (kiri) | nama | Simpan (kanan)
         LinearLayout top = bar();
-        Button undo = iconBtn("↩", "Undur", BTN);
+        ImageView undo = iconBtn(R.drawable.ic_undo, "Undur", BTN);
         undo.setOnClickListener(v -> {
             if (activeTool == T_CROP) { cancelCrop(); return; }
             if (!editor.undo()) toast("Tiada tindakan untuk diundur");
         });
         top.addView(undo);
-        nameLbl = text("", 13, MUTED, false);
-        nameLbl.setGravity(Gravity.CENTER);
+        LinearLayout info = new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.setPadding(px(12), 0, px(8), 0);
+        nameLbl = text("", 14, Color.WHITE, true);
         nameLbl.setSingleLine(true);
         nameLbl.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-        top.addView(nameLbl, new LinearLayout.LayoutParams(0, -2, 1));
-        saveBtn = iconBtn("💾", "Simpan", 0xFF1E8E3E);
+        metaLbl = text("", 11, MUTED, false);
+        metaLbl.setSingleLine(true);
+        info.addView(nameLbl);
+        info.addView(metaLbl);
+        top.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+        editDelBtn = iconBtn(R.drawable.ic_delete, "Padam gambar ini", 0xFF3A2328);
+        editDelBtn.setColorFilter(0xFFFF6B6B);
+        editDelBtn.setOnClickListener(v -> deleteCurrent());
+        top.addView(editDelBtn);
+        saveBtn = iconBtn(R.drawable.ic_save, "Simpan", 0xFF1E8E3E);
+        ((LinearLayout.LayoutParams) saveBtn.getLayoutParams()).leftMargin = px(10);
         saveBtn.setOnClickListener(v -> save());
         top.addView(saveBtn);
         editorRoot.addView(top);
@@ -723,16 +759,16 @@ public class MainActivity extends Activity {
 
         // Panel pangkas
         cropPanel = panel();
-        Button cancel = pill("✕  Batal", BTN);
+        ImageView cancel = iconBtn(R.drawable.ic_close, "Batal", BTN);
         cancel.setOnClickListener(v -> cancelCrop());
-        Button apply = pill("✓  Pangkas", 0xFFF9AB00);
-        apply.setTextColor(Color.BLACK);
+        ImageView apply = iconBtn(R.drawable.ic_check, "Pangkas", 0xFFF9AB00);
+        apply.setColorFilter(Color.BLACK);
         apply.setOnClickListener(v -> {
             if (!editor.applyCrop()) toast("Kawasan pangkas terlalu kecil");
             setTool(T_NONE);
         });
-        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, px(44), 1);
-        plp.setMargins(px(8), 0, px(8), 0);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, px(46), 1);
+        plp.setMargins(px(10), 0, px(10), 0);
         cropPanel.addView(cancel, plp);
         cropPanel.addView(apply, new LinearLayout.LayoutParams(plp));
 
@@ -743,13 +779,18 @@ public class MainActivity extends Activity {
         // Bar alat bawah: Crop, Conteng, Rotate, Kecerahan
         LinearLayout toolBar = new LinearLayout(this);
         toolBar.setBackgroundColor(BAR);
-        toolBar.setPadding(px(4), px(6), px(4), px(10));
-        String[][] spec = {{"✂︎", "Pangkas"}, {"✎︎", "Conteng"}, {"↻", "Putar"}, {"☀︎", "Kecerahan"}};
+        toolBar.setPadding(px(8), px(10), px(8), px(14));
+        int[] icons = {R.drawable.ic_crop, R.drawable.ic_pen, R.drawable.ic_rotate, R.drawable.ic_brightness};
+        String[] labels = {"Pangkas", "Conteng", "Putar", "Kecerahan"};
         for (int i = 0; i < 4; i++) {
-            tools[i] = tool(spec[i][0], spec[i][1]);
+            tools[i] = tool(icons[i], labels[i]);
             toolBar.addView(tools[i], new LinearLayout.LayoutParams(0, -2, 1));
         }
-        drawIcon = (TextView) tools[1].getChildAt(0);
+        // titik kecil di bawah ikon pen menunjukkan warna semasa
+        penDot = new View(this);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(px(8), px(8));
+        dlp.topMargin = px(3);
+        tools[1].addView(penDot, dlp);
         tools[0].setOnClickListener(v -> {
             if (activeTool == T_CROP) return;
             editor.startCrop();
@@ -794,17 +835,22 @@ public class MainActivity extends Activity {
         int[] map = {T_CROP, T_DRAW, T_NONE, T_BRI};
         for (int i = 0; i < 4; i++) {
             boolean on = map[i] == t && t != T_NONE;
-            tools[i].setBackground(on ? round(0xFF263A55, 12) : null);
-            TextView ic = (TextView) tools[i].getChildAt(0), lb = (TextView) tools[i].getChildAt(1);
-            lb.setTextColor(on ? ACCENT : MUTED);
-            if (i != 1) ic.setTextColor(on ? ACCENT : Color.WHITE);
+            ImageView ic = (ImageView) tools[i].getChildAt(0);
+            ic.setBackground(on ? oval(ACCENT) : null);
+            ic.setColorFilter(on ? 0xFF0B1A2E : 0xFFE8EAED);
         }
     }
 
     private void selectPen(int idx) {
         penIdx = idx;
         editor.setPenColor(PEN_COLORS[idx]);
-        if (drawIcon != null) drawIcon.setTextColor(idx == 2 ? Color.WHITE : PEN_COLORS[idx]);
+        if (penDot != null) {
+            GradientDrawable pd = new GradientDrawable();
+            pd.setShape(GradientDrawable.OVAL);
+            pd.setColor(PEN_COLORS[idx]);
+            pd.setStroke(px(1), Color.WHITE);
+            penDot.setBackground(pd);
+        }
         for (int i = 0; i < 3; i++) {
             GradientDrawable g = new GradientDrawable();
             g.setShape(GradientDrawable.OVAL);
@@ -812,10 +858,6 @@ public class MainActivity extends Activity {
             g.setStroke(px(i == idx ? 3 : 1), i == idx ? Color.WHITE : 0xFF555B63);
             dots[i].setBackground(g);
         }
-        if (idx == 2 && drawIcon != null) {
-            // pen hitam: tunjuk ikon putih dengan garis bawah hitam supaya kelihatan
-            drawIcon.setShadowLayer(px(2), 0, 0, Color.BLACK);
-        } else if (drawIcon != null) drawIcon.setShadowLayer(0, 0, 0, 0);
     }
 
     private void openAt(int pos) {
@@ -853,6 +895,7 @@ public class MainActivity extends Activity {
         galleryRoot.setVisibility(View.GONE);
         editorRoot.setVisibility(View.VISIBLE);
         nameLbl.setText("Memuatkan…");
+        metaLbl.setText("");
         editor.clear();
         pool.execute(() -> {
             try {
@@ -863,8 +906,9 @@ public class MainActivity extends Activity {
                     curUri = uri;
                     curName = name.replaceAll("\\.[^.]+$", "").replaceAll("[^\\w\\-]+", "_");
                     if (curName.isEmpty()) curName = "imej";
-                    nameLbl.setText((curIndex >= 0 ? (curIndex + 1) + "/" + ids.size() + "  ·  " : "")
-                            + name + "  ·  " + dims[0] + "×" + dims[1]);
+                    nameLbl.setText(name);
+                    metaLbl.setText((curIndex >= 0 ? (curIndex + 1) + " / " + ids.size() + "   ·   " : "")
+                            + dims[0] + " × " + dims[1] + " px");
                     doc = new EditDoc(dims[0], dims[1]);
                     editor.setSource(prev, doc, prev.getWidth() / (float) dims[0]);
                     bri.setProgress(80);
@@ -1046,19 +1090,26 @@ public class MainActivity extends Activity {
         return l;
     }
 
-    private LinearLayout tool(String glyph, String label) {
+    private LinearLayout tool(int icon, String label) {
         LinearLayout l = new LinearLayout(this);
         l.setOrientation(LinearLayout.VERTICAL);
         l.setGravity(Gravity.CENTER);
-        l.setPadding(0, px(6), 0, px(6));
         l.setContentDescription(label);
-        TextView ic = text(glyph, 24, Color.WHITE, false);
-        ic.setGravity(Gravity.CENTER);
-        TextView lb = text(label, 11, MUTED, false);
-        lb.setGravity(Gravity.CENTER);
-        l.addView(ic);
-        l.addView(lb);
+        ImageView ic = new ImageView(this);
+        ic.setImageResource(icon);
+        ic.setColorFilter(0xFFE8EAED);
+        ic.setScaleType(ImageView.ScaleType.CENTER);
+        ic.setContentDescription(label);
+        l.addView(ic, new LinearLayout.LayoutParams(px(52), px(52)));
+        l.setOnLongClickListener(v -> { toast(label); return true; });
         return l;
+    }
+
+    private GradientDrawable oval(int color) {
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setColor(color);
+        return g;
     }
 
     private TextView text(String s, int sp, int color, boolean bold) {
@@ -1070,32 +1121,17 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    private Button iconBtn(String glyph, String label, int color) {
-        Button b = new Button(this);
-        b.setText(glyph);
-        b.setAllCaps(false);
-        b.setTextColor(Color.WHITE);
-        b.setTextSize(19);
-        b.setPadding(0, 0, 0, 0);
-        b.setMinWidth(0); b.setMinimumWidth(0);
-        b.setMinHeight(0); b.setMinimumHeight(0);
+    private ImageView iconBtn(int icon, String label, int color) {
+        ImageView b = new ImageView(this);
+        b.setImageResource(icon);
+        b.setColorFilter(Color.WHITE);
+        b.setScaleType(ImageView.ScaleType.CENTER);
         b.setContentDescription(label);
+        b.setClickable(true);
         b.setOnLongClickListener(v -> { toast(label); return true; });
-        b.setBackground(round(color, 12));
-        b.setLayoutParams(new LinearLayout.LayoutParams(px(44), px(44)));
-        b.setStateListAnimator(null);
-        return b;
-    }
-
-    private Button pill(String s, int color) {
-        Button b = new Button(this);
-        b.setText(s);
-        b.setAllCaps(false);
-        b.setTextColor(Color.WHITE);
-        b.setTextSize(15);
-        b.setTypeface(Typeface.DEFAULT_BOLD);
-        b.setBackground(round(color, 12));
-        b.setStateListAnimator(null);
+        b.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x33FFFFFF), round(color, 14), null));
+        b.setLayoutParams(new LinearLayout.LayoutParams(px(46), px(46)));
         return b;
     }
 
