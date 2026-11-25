@@ -31,6 +31,8 @@ import android.provider.Settings;
 import android.util.LruCache;
 import android.util.Size;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
+import android.view.ViewConfiguration;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
@@ -93,6 +95,28 @@ public class MainActivity extends Activity {
     private int cols = 3, minCols = 2, maxCols = 6;
     private ScaleGestureDetector scaleDet;
     private float scaleAcc = 1f;
+
+    // Seret untuk pilih
+    private boolean dragSel;
+    private int dragStart = -1, dragLast = -1, touchSlop;
+    private boolean dragAdd;
+    private HashSet<Long> dragBase = new HashSet<>();
+    private float downX, downY, lastX = -1, lastY = -1;
+    private final Runnable autoScroll = new Runnable() {
+        @Override public void run() {
+            if (!dragSel) return;
+            if (lastY >= 0) {
+                int edge = px(80), h = grid.getHeight(), dy = 0;
+                if (lastY < edge) dy = -Math.max(4, (int) ((edge - lastY) / edge * px(28)));
+                else if (lastY > h - edge) dy = Math.max(4, (int) ((lastY - (h - edge)) / edge * px(28)));
+                if (dy != 0) {
+                    grid.scrollListBy(dy);
+                    updateDragTo(grid.pointToPosition((int) lastX, (int) Math.max(1, Math.min(h - 1, lastY))));
+                }
+            }
+            ui.postDelayed(this, 16);
+        }
+    };
 
     // Penyunting
     private LinearLayout editorRoot, colorPanel, briPanel, cropPanel;
@@ -270,19 +294,25 @@ public class MainActivity extends Activity {
         grid.setOnItemClickListener((parent, view, pos, id) -> {
             if (selecting) toggleSelect(pos); else openAt(pos);
         });
-        grid.setOnItemLongClickListener((parent, view, pos, id) -> { startPeek(pos); return true; });
+        touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+        grid.setOnItemLongClickListener((parent, view, pos, id) -> {
+            if (selecting) { dragStart = pos; beginDragSelect(); }   // mod pilih: tekan lama + seret
+            else startPeek(pos);
+            return true;
+        });
         grid.setOnTouchListener((v, ev) -> {
             int a = ev.getActionMasked();
-            if (!peeking) {
-                scaleDet.onTouchEvent(ev);
-                if (a == MotionEvent.ACTION_POINTER_DOWN) cancelGridTouch(ev);
-                return ev.getPointerCount() > 1 || scaleDet.isInProgress();
+            if (peeking) {
+                if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+                    endPeek();
+                    cancelGridTouch(ev);
+                }
+                return true;
             }
-            if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
-                endPeek();
-                cancelGridTouch(ev);
-            }
-            return true;
+            if (selecting && ev.getPointerCount() == 1 && handleDragSelect(ev, a)) return true;
+            scaleDet.onTouchEvent(ev);
+            if (a == MotionEvent.ACTION_POINTER_DOWN) cancelGridTouch(ev);
+            return ev.getPointerCount() > 1 || scaleDet.isInProgress();
         });
         grid.addOnLayoutChangeListener((v, l, t, r, bt, ol, ot, or, ob) -> {
             if (bt - t != ob - ot) adapter.notifyDataSetChanged();
@@ -414,6 +444,69 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** @return true jika sentuhan digunakan untuk seret-pilih. */
+    private boolean handleDragSelect(MotionEvent ev, int a) {
+        switch (a) {
+            case MotionEvent.ACTION_DOWN:
+                downX = ev.getX(); downY = ev.getY();
+                lastX = -1; lastY = -1;
+                dragStart = grid.pointToPosition((int) downX, (int) downY);
+                dragSel = false;
+                return false;
+            case MotionEvent.ACTION_MOVE:
+                if (!dragSel && dragStart != GridView.INVALID_POSITION) {
+                    float dx = ev.getX() - downX, dy = ev.getY() - downY;
+                    // seret mendatar memulakan pilihan; seret menegak = skrol biasa
+                    if (Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy)) beginDragSelect();
+                }
+                if (dragSel) {
+                    lastX = ev.getX(); lastY = ev.getY();
+                    updateDragTo(grid.pointToPosition((int) lastX, (int) lastY));
+                    return true;
+                }
+                return false;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                if (dragSel) { endDragSelect(); return true; }
+                return false;
+        }
+        return dragSel;
+    }
+
+    private void beginDragSelect() {
+        if (dragStart < 0 || dragStart >= ids.size()) return;
+        dragSel = true;
+        dragBase = new HashSet<>(selected);
+        dragAdd = !selected.contains(ids.get(dragStart));
+        dragLast = -1;
+        long now = android.os.SystemClock.uptimeMillis();
+        MotionEvent c = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0, 0, 0);
+        grid.onTouchEvent(c);
+        c.recycle();
+        grid.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+        updateDragTo(dragStart);
+        ui.removeCallbacks(autoScroll);
+        ui.post(autoScroll);
+    }
+
+    private void updateDragTo(int pos) {
+        if (pos == GridView.INVALID_POSITION || pos == dragLast || pos >= ids.size()) return;
+        dragLast = pos;
+        selected.clear();
+        selected.addAll(dragBase);
+        int lo = Math.min(dragStart, pos), hi = Math.max(dragStart, pos);
+        for (int i = lo; i <= hi; i++) {
+            if (dragAdd) selected.add(ids.get(i)); else selected.remove(ids.get(i));
+        }
+        updateSelTitle();
+        adapter.notifyDataSetChanged();
+    }
+
+    private void endDragSelect() {
+        dragSel = false;
+        ui.removeCallbacks(autoScroll);
+    }
+
     private void cancelGridTouch(MotionEvent ev) {
         MotionEvent c = MotionEvent.obtain(ev);
         c.setAction(MotionEvent.ACTION_CANCEL);
@@ -437,7 +530,7 @@ public class MainActivity extends Activity {
 
     private void setSelecting(boolean on) {
         selecting = on;
-        if (!on) selected.clear();
+        if (!on) { selected.clear(); endDragSelect(); }
         cancelSelBtn.setVisibility(on ? View.VISIBLE : View.GONE);
         delBtn.setVisibility(on ? View.VISIBLE : View.GONE);
         selBtn.setVisibility(on ? View.GONE : View.VISIBLE);
