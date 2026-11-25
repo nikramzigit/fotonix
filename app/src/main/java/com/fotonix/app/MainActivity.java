@@ -75,6 +75,7 @@ public class MainActivity extends Activity {
     private float dp;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService pool = Executors.newFixedThreadPool(4);
+    private final ExecutorService peekPool = Executors.newSingleThreadExecutor();   // tidak beratur di belakang lakaran kecil
 
     // Galeri
     private LinearLayout galleryRoot;
@@ -796,14 +797,13 @@ public class MainActivity extends Activity {
         peek.setAlpha(0f);
         peek.setVisibility(View.VISIBLE);
         peek.animate().alpha(1f).setDuration(120).start();
-        final int w = getResources().getDisplayMetrics().widthPixels, h = getResources().getDisplayMetrics().heightPixels;
-        pool.execute(() -> {
+        // Nyahkod gambar sebenar pada saiz skrin (bukan lakaran kecil sistem yang kabur)
+        final int max = Math.max(getResources().getDisplayMetrics().widthPixels, getResources().getDisplayMetrics().heightPixels);
+        peekPool.execute(() -> {
+            if (!peeking || peekId != id) return;
             Bitmap big = null;
             Uri u = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
-            try {
-                if (Build.VERSION.SDK_INT >= 29) big = getContentResolver().loadThumbnail(u, new Size(w, h), null);
-                else big = decode(u, true, null);
-            } catch (Throwable ignored) {}
+            try { big = decodeMax(u, max, null, 1); } catch (Throwable ignored) {}
             final Bitmap b = big;
             if (b != null) ui.post(() -> { if (peeking && peekId == id) peek.setImageBitmap(b); });
         });
@@ -1114,6 +1114,12 @@ public class MainActivity extends Activity {
     }
 
     private Bitmap decode(Uri uri, boolean preview, int[] dims, int forceSample) throws Exception {
+        return decodeMax(uri, preview ? PREVIEW_MAX : 0, dims, forceSample);
+    }
+
+    /** maxDim > 0: kecilkan supaya sisi terpanjang <= maxDim. maxDim = 0: resolusi penuh. */
+    private Bitmap decodeMax(Uri uri, int maxDim, int[] dims, int forceSample) throws Exception {
+        final boolean preview = maxDim > 0;
         BitmapFactory.Options o = new BitmapFactory.Options();
         o.inJustDecodeBounds = true;
         try (InputStream is = getContentResolver().openInputStream(uri)) { BitmapFactory.decodeStream(is, null, o); }
@@ -1123,7 +1129,7 @@ public class MainActivity extends Activity {
         if (dims != null) { dims[0] = swap ? o.outHeight : o.outWidth; dims[1] = swap ? o.outWidth : o.outHeight; }
 
         int sample = forceSample;
-        if (preview) while (Math.max(o.outWidth, o.outHeight) / (sample * 2) >= PREVIEW_MAX) sample *= 2;
+        if (preview) while (Math.max(o.outWidth, o.outHeight) / (sample * 2) >= maxDim) sample *= 2;
         BitmapFactory.Options d = new BitmapFactory.Options();
         d.inSampleSize = sample;
         d.inPreferredConfig = Bitmap.Config.ARGB_8888;
@@ -1132,7 +1138,7 @@ public class MainActivity extends Activity {
         try (InputStream is = getContentResolver().openInputStream(uri)) { bmp = BitmapFactory.decodeStream(is, null, d); }
         if (bmp == null) throw new Exception("format tidak disokong");
 
-        float s = preview ? Math.min(1f, (float) PREVIEW_MAX / Math.max(bmp.getWidth(), bmp.getHeight())) : 1f;
+        float s = preview ? Math.min(1f, (float) maxDim / Math.max(bmp.getWidth(), bmp.getHeight())) : 1f;
         if (s >= 1f && rot == 0) return bmp;
         int w = bmp.getWidth(), h = bmp.getHeight();
         int nw = Math.round((swap ? h : w) * s), nh = Math.round((swap ? w : h) * s);
