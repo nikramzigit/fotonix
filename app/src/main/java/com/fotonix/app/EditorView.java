@@ -11,6 +11,7 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 
 /** Kanvas penyunting: pratonton imej + lapisan conteng + kotak pangkas. */
@@ -48,6 +49,13 @@ public class EditorView extends View {
     private SwipeListener swipeListener;
     private final GestureDetector gestures;
 
+    // Zum & anjak
+    private static final float MAX_ZOOM = 8f;
+    private final ScaleGestureDetector scaleDet;
+    private float zoom = 1f, panX, panY, fitScale = 1f, tx, ty;
+    private boolean multi;
+    private float lastFX, lastFY, lastSX, lastSY;
+
     // Pangkas
     private RectF crop;
     private boolean dL, dT, dR, dB, dMove;
@@ -72,8 +80,12 @@ public class EditorView extends View {
         handle.setStrokeCap(Paint.Cap.SQUARE);
         gestures = new GestureDetector(c, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
+            @Override public boolean onDoubleTap(MotionEvent e) {
+                if (zoom > 1.05f) resetZoom(); else zoomAt(2.5f / zoom, e.getX(), e.getY());
+                return true;
+            }
             @Override public boolean onFling(MotionEvent e1, MotionEvent e2, float vx, float vy) {
-                if (e1 == null || swipeListener == null) return false;
+                if (e1 == null || swipeListener == null || zoom > 1.05f) return false;
                 float dx = e2.getX() - e1.getX(), dy = e2.getY() - e1.getY();
                 if (Math.abs(dx) > 60 * dp && Math.abs(dx) > Math.abs(dy) * 1.5f && Math.abs(vx) > 500) {
                     swipeListener.onSwipe(dx < 0 ? 1 : -1);
@@ -82,7 +94,30 @@ public class EditorView extends View {
                 return false;
             }
         });
+        scaleDet = new ScaleGestureDetector(c, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override public boolean onScale(ScaleGestureDetector d) {
+                zoomAt(d.getScaleFactor(), d.getFocusX(), d.getFocusY());
+                return true;
+            }
+        });
     }
+
+    /** Zum dengan faktor f di sekitar titik skrin (fx, fy). */
+    private void zoomAt(float f, float fx, float fy) {
+        if (base == null) return;
+        float nz = Math.max(1f, Math.min(MAX_ZOOM, zoom * f));
+        float rf = nz / zoom;
+        float ntx = fx - (fx - tx) * rf, nty = fy - (fy - ty) * rf;
+        zoom = nz;
+        panX = ntx - (getWidth() - base.getWidth() * fitScale * zoom) / 2f;
+        panY = nty - (getHeight() - base.getHeight() * fitScale * zoom) / 2f;
+        updateMatrix();
+        invalidate();
+    }
+
+    public void resetZoom() { zoom = 1f; panX = panY = 0; updateMatrix(); invalidate(); }
+
+    public boolean isZoomed() { return zoom > 1.05f; }
 
     public void setSwipeListener(SwipeListener l) { swipeListener = l; }
 
@@ -168,7 +203,9 @@ public class EditorView extends View {
     private void rebuild() {
         if (src == null || doc == null) return;
         Bitmap old = base;
+        int ow = old == null ? -1 : old.getWidth(), oh = old == null ? -1 : old.getHeight();
         base = doc.applyGeometry(src, scale, false);
+        if (base.getWidth() != ow || base.getHeight() != oh) { zoom = 1f; panX = panY = 0; }   // saiz berubah (putar/pangkas)
         if (old != null && old != src && old != base) old.recycle();
         if (ink != null) ink.recycle();
         ink = Bitmap.createBitmap(base.getWidth(), base.getHeight(), Bitmap.Config.ARGB_8888);
@@ -188,12 +225,18 @@ public class EditorView extends View {
         if (base == null || getWidth() == 0) return;
         float pad = 16 * dp;
         float aw = getWidth() - 2 * pad, ah = getHeight() - 2 * pad;
-        viewScale = Math.min(aw / base.getWidth(), ah / base.getHeight());
-        float dx = (getWidth() - base.getWidth() * viewScale) / 2f;
-        float dy = (getHeight() - base.getHeight() * viewScale) / 2f;
+        fitScale = Math.min(aw / base.getWidth(), ah / base.getHeight());
+        viewScale = fitScale * zoom;
+        float cw = base.getWidth() * viewScale, ch = base.getHeight() * viewScale;
+        float W = getWidth(), H = getHeight();
+        // Hadkan anjakan supaya tepi gambar tidak terlepas dari skrin
+        tx = cw <= W ? (W - cw) / 2f : Math.max(W - cw, Math.min(0, (W - cw) / 2f + panX));
+        ty = ch <= H ? (H - ch) / 2f : Math.max(H - ch, Math.min(0, (H - ch) / 2f + panY));
+        panX = tx - (W - cw) / 2f;
+        panY = ty - (H - ch) / 2f;
         viewMatrix.reset();
         viewMatrix.postScale(viewScale, viewScale);
-        viewMatrix.postTranslate(dx, dy);
+        viewMatrix.postTranslate(tx, ty);
         viewMatrix.invert(inverse);
     }
 
@@ -240,7 +283,46 @@ public class EditorView extends View {
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         if (base == null) return false;
-        if (mode == MODE_NONE) return gestures.onTouchEvent(e);
+        int act = e.getActionMasked();
+
+        // Dua jari: zum + anjak (dalam semua mod)
+        scaleDet.onTouchEvent(e);
+        if (act == MotionEvent.ACTION_POINTER_DOWN) {
+            if (touching && mode == MODE_DRAW) { liveN = 0; rebuild(); }   // batalkan conteng separuh jalan
+            touching = false;
+            multi = true;
+            focus(e, -1);
+            return true;
+        }
+        if (multi) {
+            if (act == MotionEvent.ACTION_MOVE) {
+                float fx = lastFX, fy = lastFY;
+                focus(e, -1);
+                panX += lastFX - fx;
+                panY += lastFY - fy;
+                updateMatrix();
+                invalidate();
+            } else if (act == MotionEvent.ACTION_POINTER_UP) {
+                focus(e, e.getActionIndex());
+            } else if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+                multi = false;
+            }
+            return true;
+        }
+
+        if (mode == MODE_NONE) {
+            gestures.onTouchEvent(e);
+            // Satu jari: anjak gambar apabila dizum
+            if (act == MotionEvent.ACTION_DOWN) { lastSX = e.getX(); lastSY = e.getY(); }
+            else if (act == MotionEvent.ACTION_MOVE && zoom > 1.05f) {
+                panX += e.getX() - lastSX;
+                panY += e.getY() - lastSY;
+                lastSX = e.getX(); lastSY = e.getY();
+                updateMatrix();
+                invalidate();
+            }
+            return true;
+        }
         float[] p = {e.getX(), e.getY()};
         inverse.mapPoints(p);
         float bx = p[0], by = p[1];
@@ -293,6 +375,17 @@ public class EditorView extends View {
                 return true;
         }
         return super.onTouchEvent(e);
+    }
+
+    /** Titik tengah semua jari (kecuali jari yang sedang diangkat). */
+    private void focus(MotionEvent e, int skip) {
+        float sx = 0, sy = 0;
+        int n = 0;
+        for (int i = 0; i < e.getPointerCount(); i++) {
+            if (i == skip) continue;
+            sx += e.getX(i); sy += e.getY(i); n++;
+        }
+        if (n > 0) { lastFX = sx / n; lastFY = sy / n; }
     }
 
     private void addLive(float x, float y) {
