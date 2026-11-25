@@ -6,155 +6,151 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
-import android.graphics.DashPathEffect;
 import android.graphics.Matrix;
 import android.graphics.Paint;
-import android.graphics.Path;
-import android.graphics.Rect;
 import android.graphics.RectF;
 import android.view.MotionEvent;
 import android.view.View;
 
-import java.util.ArrayList;
-
-/** Kanvas penyunting native: imej asas + lapisan conteng. */
+/** Kanvas penyunting: pratonton imej + lapisan conteng + kotak pangkas. */
 public class EditorView extends View {
 
-    public static final int MODE_DRAW = 0, MODE_CROP = 1;
-    private static final int MAX_UNDO = 5;
+    public static final int MODE_NONE = 0, MODE_DRAW = 1, MODE_CROP = 2;
 
-    private Bitmap base, ink;
+    private Bitmap src, base, ink;
     private Canvas inkCanvas;
+    private EditDoc doc;
+    private float scale = 1f;          // pratonton / asal
+    private float viewScale = 1f;      // skrin / pratonton
     private float brightness = 1f;
-    private int mode = MODE_DRAW;
+    private int mode = MODE_NONE;
     private int penColor = 0xFFE53935;
 
     private final Matrix viewMatrix = new Matrix(), inverse = new Matrix();
     private final Paint basePaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint bmpPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint penPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint shadePaint = new Paint();
-    private final Paint cropPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint shade = new Paint();
+    private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint thirds = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint handle = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final float dp;
 
-    private final Path livePath = new Path();
-    private float lastX, lastY, startX, startY;
+    // Conteng semasa
+    private float[] live = new float[256];
+    private int liveN;
+    private float strokeW, lastPX, lastPY;
     private boolean touching;
-    private RectF cropRect; // dalam koordinat bitmap
 
-    private final ArrayList<Bitmap[]> undo = new ArrayList<>();
+    // Pangkas
+    private RectF crop;
+    private boolean dL, dT, dR, dB, dMove;
+    private float lastBX, lastBY;
 
     public EditorView(Context c) {
         super(c);
+        dp = getResources().getDisplayMetrics().density;
         penPaint.setStyle(Paint.Style.STROKE);
         penPaint.setStrokeCap(Paint.Cap.ROUND);
         penPaint.setStrokeJoin(Paint.Join.ROUND);
-        shadePaint.setColor(0x8C000000);
-        cropPaint.setStyle(Paint.Style.STROKE);
-        cropPaint.setColor(Color.WHITE);
-        cropPaint.setStrokeWidth(3 * getResources().getDisplayMetrics().density);
-        cropPaint.setPathEffect(new DashPathEffect(new float[]{20, 12}, 0));
+        shade.setColor(0x99000000);
+        border.setStyle(Paint.Style.STROKE);
+        border.setColor(Color.WHITE);
+        border.setStrokeWidth(1.5f * dp);
+        thirds.setStyle(Paint.Style.STROKE);
+        thirds.setColor(0x80FFFFFF);
+        thirds.setStrokeWidth(1f * dp);
+        handle.setStyle(Paint.Style.STROKE);
+        handle.setColor(Color.WHITE);
+        handle.setStrokeWidth(4f * dp);
+        handle.setStrokeCap(Paint.Cap.SQUARE);
     }
 
-    // ---------- API awam ----------
+    // ================= API =================
 
     public boolean hasImage() { return base != null; }
 
-    public void setImage(Bitmap bmp) {
-        clearUndo();
-        base = bmp.isMutable() ? bmp : bmp.copy(Bitmap.Config.ARGB_8888, true);
-        ink = Bitmap.createBitmap(base.getWidth(), base.getHeight(), Bitmap.Config.ARGB_8888);
-        inkCanvas = new Canvas(ink);
+    public void setSource(Bitmap preview, EditDoc d, float s) {
+        clear();
+        src = preview; doc = d; scale = s;
         brightness = 1f;
         updateBrightness();
-        setMode(MODE_DRAW);
-        updateMatrix();
+        mode = MODE_NONE;
+        crop = null;
+        rebuild();
+    }
+
+    public void clear() {
+        if (base != null && base != src) base.recycle();
+        if (src != null) src.recycle();
+        if (ink != null) ink.recycle();
+        base = src = ink = null;
+        doc = null;
         invalidate();
     }
 
     public void setPenColor(int c) { penColor = c; }
 
-    public void setMode(int m) {
-        mode = m;
-        cropRect = null;
-        invalidate();
-    }
-
     public int getMode() { return mode; }
 
-    public void setBrightness(float k) {
-        brightness = k;
-        updateBrightness();
+    public void setMode(int m) {
+        mode = m;
+        if (m != MODE_CROP) crop = null;
         invalidate();
     }
 
+    public float getBrightness() { return brightness; }
+
+    public void setBrightness(float k) { brightness = k; updateBrightness(); invalidate(); }
+
     public boolean undo() {
-        if (undo.isEmpty()) return false;
-        Bitmap[] s = undo.remove(undo.size() - 1);
-        base.recycle(); ink.recycle();
-        base = s[0]; ink = s[1];
-        inkCanvas = new Canvas(ink);
-        updateMatrix();
-        invalidate();
+        if (doc == null || doc.ops.isEmpty()) return false;
+        doc.ops.remove(doc.ops.size() - 1);
+        rebuild();
         return true;
     }
 
     public void rotate() {
+        if (doc == null) return;
+        setMode(mode == MODE_CROP ? MODE_NONE : mode);
+        doc.ops.add(new EditDoc.Rotate());
+        rebuild();
+    }
+
+    public void startCrop() {
         if (base == null) return;
-        snapshot();
-        Matrix m = new Matrix();
-        m.postRotate(90);
-        Bitmap nb = Bitmap.createBitmap(base, 0, 0, base.getWidth(), base.getHeight(), m, true);
-        Bitmap ni = Bitmap.createBitmap(ink, 0, 0, ink.getWidth(), ink.getHeight(), m, true);
-        replace(nb, ni);
-    }
-
-    /** @return false jika tiada kawasan pangkas yang sah */
-    public boolean applyCrop() {
-        if (base == null || cropRect == null) return false;
-        Rect r = new Rect();
-        cropRect.round(r);
-        if (!r.intersect(0, 0, base.getWidth(), base.getHeight()) || r.width() < 10 || r.height() < 10) return false;
-        snapshot();
-        Bitmap nb = Bitmap.createBitmap(base, r.left, r.top, r.width(), r.height());
-        Bitmap ni = Bitmap.createBitmap(ink, r.left, r.top, r.width(), r.height());
-        replace(nb.copy(Bitmap.Config.ARGB_8888, true), ni.copy(Bitmap.Config.ARGB_8888, true));
-        setMode(MODE_DRAW);
-        return true;
-    }
-
-    /** Gabung imej + kecerahan + conteng untuk disimpan. */
-    public Bitmap export() {
-        Bitmap out = Bitmap.createBitmap(base.getWidth(), base.getHeight(), Bitmap.Config.ARGB_8888);
-        Canvas c = new Canvas(out);
-        c.drawColor(Color.WHITE);
-        c.drawBitmap(base, 0, 0, basePaint);
-        c.drawBitmap(ink, 0, 0, null);
-        return out;
-    }
-
-    // ---------- Dalaman ----------
-
-    private void replace(Bitmap nb, Bitmap ni) {
-        Bitmap ob = base, oi = ink;
-        base = nb; ink = ni;
-        if (ob != nb) ob.recycle();
-        if (oi != ni) oi.recycle();
-        inkCanvas = new Canvas(ink);
-        updateMatrix();
+        mode = MODE_CROP;
+        crop = new RectF(0, 0, base.getWidth(), base.getHeight());
         invalidate();
     }
 
-    private void snapshot() {
-        undo.add(new Bitmap[]{base.copy(Bitmap.Config.ARGB_8888, true), ink.copy(Bitmap.Config.ARGB_8888, true)});
-        while (undo.size() > MAX_UNDO) {
-            Bitmap[] old = undo.remove(0);
-            old[0].recycle(); old[1].recycle();
-        }
+    /** Pangkas mengikut kotak. @return false jika kotak tidak sah. */
+    public boolean applyCrop() {
+        if (doc == null || crop == null) return false;
+        float[] sz = doc.currentSize();
+        float l = Math.max(0, crop.left / scale), t = Math.max(0, crop.top / scale);
+        float w = Math.min(crop.width() / scale, sz[0] - l), h = Math.min(crop.height() / scale, sz[1] - t);
+        setMode(MODE_NONE);
+        if (w < 4 || h < 4) return false;
+        if (l < 1 && t < 1 && w > sz[0] - 1 && h > sz[1] - 1) return true; // tiada perubahan
+        doc.ops.add(new EditDoc.Crop(Math.round(l), Math.round(t), Math.round(w), Math.round(h)));
+        rebuild();
+        return true;
     }
 
-    private void clearUndo() {
-        for (Bitmap[] s : undo) { s[0].recycle(); s[1].recycle(); }
-        undo.clear();
+    // ================= Dalaman =================
+
+    private void rebuild() {
+        if (src == null || doc == null) return;
+        Bitmap old = base;
+        base = doc.applyGeometry(src, scale, false);
+        if (old != null && old != src && old != base) old.recycle();
+        if (ink != null) ink.recycle();
+        ink = Bitmap.createBitmap(base.getWidth(), base.getHeight(), Bitmap.Config.ARGB_8888);
+        inkCanvas = new Canvas(ink);
+        doc.drawStrokes(inkCanvas, scale);
+        updateMatrix();
+        invalidate();
     }
 
     private void updateBrightness() {
@@ -165,20 +161,19 @@ public class EditorView extends View {
 
     private void updateMatrix() {
         if (base == null || getWidth() == 0) return;
-        float pad = 12 * getResources().getDisplayMetrics().density;
+        float pad = 16 * dp;
         float aw = getWidth() - 2 * pad, ah = getHeight() - 2 * pad;
-        float s = Math.min(aw / base.getWidth(), ah / base.getHeight());
-        float dx = (getWidth() - base.getWidth() * s) / 2f, dy = (getHeight() - base.getHeight() * s) / 2f;
+        viewScale = Math.min(aw / base.getWidth(), ah / base.getHeight());
+        float dx = (getWidth() - base.getWidth() * viewScale) / 2f;
+        float dy = (getHeight() - base.getHeight() * viewScale) / 2f;
         viewMatrix.reset();
-        viewMatrix.postScale(s, s);
+        viewMatrix.postScale(viewScale, viewScale);
         viewMatrix.postTranslate(dx, dy);
         viewMatrix.invert(inverse);
     }
 
     @Override
-    protected void onSizeChanged(int w, int h, int ow, int oh) {
-        updateMatrix();
-    }
+    protected void onSizeChanged(int w, int h, int ow, int oh) { updateMatrix(); }
 
     @Override
     protected void onDraw(Canvas canvas) {
@@ -189,41 +184,56 @@ public class EditorView extends View {
         canvas.drawBitmap(ink, 0, 0, bmpPaint);
         canvas.restore();
 
-        if (mode == MODE_CROP && cropRect != null) {
-            RectF v = new RectF();
-            viewMatrix.mapRect(v, cropRect);
+        if (mode == MODE_CROP && crop != null) {
             RectF img = new RectF(0, 0, base.getWidth(), base.getHeight());
             viewMatrix.mapRect(img);
-            canvas.drawRect(img.left, img.top, img.right, v.top, shadePaint);
-            canvas.drawRect(img.left, v.bottom, img.right, img.bottom, shadePaint);
-            canvas.drawRect(img.left, v.top, v.left, v.bottom, shadePaint);
-            canvas.drawRect(v.right, v.top, img.right, v.bottom, shadePaint);
-            canvas.drawRect(v, cropPaint);
+            RectF v = new RectF();
+            viewMatrix.mapRect(v, crop);
+            canvas.drawRect(img.left, img.top, img.right, v.top, shade);
+            canvas.drawRect(img.left, v.bottom, img.right, img.bottom, shade);
+            canvas.drawRect(img.left, v.top, v.left, v.bottom, shade);
+            canvas.drawRect(v.right, v.top, img.right, v.bottom, shade);
+            for (int i = 1; i <= 2; i++) {
+                float x = v.left + v.width() * i / 3f, y = v.top + v.height() * i / 3f;
+                canvas.drawLine(x, v.top, x, v.bottom, thirds);
+                canvas.drawLine(v.left, y, v.right, y, thirds);
+            }
+            canvas.drawRect(v, border);
+            float L = Math.min(22 * dp, Math.min(v.width(), v.height()) / 3f);
+            drawCorner(canvas, v.left, v.top, L, L);
+            drawCorner(canvas, v.right, v.top, -L, L);
+            drawCorner(canvas, v.left, v.bottom, L, -L);
+            drawCorner(canvas, v.right, v.bottom, -L, -L);
         }
+    }
+
+    private void drawCorner(Canvas c, float x, float y, float lx, float ly) {
+        c.drawLine(x, y, x + lx, y, handle);
+        c.drawLine(x, y, x, y + ly, handle);
     }
 
     @Override
     public boolean onTouchEvent(MotionEvent e) {
-        if (base == null) return false;
+        if (base == null || mode == MODE_NONE) return false;
         float[] p = {e.getX(), e.getY()};
         inverse.mapPoints(p);
-        float x = p[0], y = p[1];
+        float bx = p[0], by = p[1];
 
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 touching = true;
                 if (mode == MODE_DRAW) {
-                    snapshot();
+                    float[] sz = doc.currentSize();
+                    strokeW = Math.max(3f / scale, sz[0] / 180f);   // dalam piksel asal
                     penPaint.setColor(penColor);
-                    penPaint.setStrokeWidth(Math.max(4f, base.getWidth() / 180f));
-                    livePath.reset();
-                    livePath.moveTo(x, y);
-                    livePath.lineTo(x + 0.1f, y + 0.1f);
-                    inkCanvas.drawPath(livePath, penPaint);
-                    lastX = x; lastY = y;
+                    penPaint.setStrokeWidth(strokeW * scale);
+                    liveN = 0;
+                    addLive(bx / scale, by / scale);
+                    inkCanvas.drawPoint(bx, by, penPaint);
+                    lastPX = bx; lastPY = by;
                 } else {
-                    startX = clampX(x); startY = clampY(y);
-                    cropRect = new RectF(startX, startY, startX, startY);
+                    beginCropDrag(e.getX(), e.getY());
+                    lastBX = bx; lastBY = by;
                 }
                 invalidate();
                 return true;
@@ -231,33 +241,68 @@ public class EditorView extends View {
             case MotionEvent.ACTION_MOVE:
                 if (!touching) return true;
                 if (mode == MODE_DRAW) {
-                    // Gunakan titik sejarah untuk garisan lancar
                     int n = e.getHistorySize();
                     for (int i = 0; i <= n; i++) {
                         float[] q = (i < n) ? new float[]{e.getHistoricalX(i), e.getHistoricalY(i)} : new float[]{e.getX(), e.getY()};
                         inverse.mapPoints(q);
-                        livePath.reset();
-                        livePath.moveTo(lastX, lastY);
-                        livePath.quadTo(lastX, lastY, (lastX + q[0]) / 2f, (lastY + q[1]) / 2f);
-                        livePath.lineTo(q[0], q[1]);
-                        inkCanvas.drawPath(livePath, penPaint);
-                        lastX = q[0]; lastY = q[1];
+                        inkCanvas.drawLine(lastPX, lastPY, q[0], q[1], penPaint);
+                        addLive(q[0] / scale, q[1] / scale);
+                        lastPX = q[0]; lastPY = q[1];
                     }
-                } else if (cropRect != null) {
-                    float cx = clampX(x), cy = clampY(y);
-                    cropRect.set(Math.min(startX, cx), Math.min(startY, cy), Math.max(startX, cx), Math.max(startY, cy));
+                } else if (crop != null) {
+                    dragCrop(bx - lastBX, by - lastBY);
+                    lastBX = bx; lastBY = by;
                 }
                 invalidate();
                 return true;
 
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
+                if (touching && mode == MODE_DRAW && liveN > 0) {
+                    float[] pts = new float[liveN];
+                    System.arraycopy(live, 0, pts, 0, liveN);
+                    doc.ops.add(new EditDoc.Stroke(pts, penColor, strokeW));
+                }
                 touching = false;
                 return true;
         }
         return super.onTouchEvent(e);
     }
 
-    private float clampX(float x) { return Math.max(0, Math.min(base.getWidth(), x)); }
-    private float clampY(float y) { return Math.max(0, Math.min(base.getHeight(), y)); }
+    private void addLive(float x, float y) {
+        if (liveN + 2 > live.length) {
+            float[] n = new float[live.length * 2];
+            System.arraycopy(live, 0, n, 0, liveN);
+            live = n;
+        }
+        live[liveN++] = x;
+        live[liveN++] = y;
+    }
+
+    private void beginCropDrag(float sx, float sy) {
+        RectF v = new RectF();
+        viewMatrix.mapRect(v, crop);
+        float r = 32 * dp;
+        boolean nearL = Math.abs(sx - v.left) < r, nearR = Math.abs(sx - v.right) < r;
+        boolean nearT = Math.abs(sy - v.top) < r, nearB = Math.abs(sy - v.bottom) < r;
+        boolean inY = sy > v.top - r && sy < v.bottom + r, inX = sx > v.left - r && sx < v.right + r;
+        dL = nearL && inY; dR = nearR && inY && !dL;
+        dT = nearT && inX; dB = nearB && inX && !dT;
+        dMove = !(dL || dR || dT || dB) && v.contains(sx, sy);
+    }
+
+    private void dragCrop(float dx, float dy) {
+        float W = base.getWidth(), H = base.getHeight();
+        float min = 48 * dp / viewScale;
+        if (dMove) {
+            float ox = Math.max(-crop.left, Math.min(W - crop.right, dx));
+            float oy = Math.max(-crop.top, Math.min(H - crop.bottom, dy));
+            crop.offset(ox, oy);
+            return;
+        }
+        if (dL) crop.left = Math.max(0, Math.min(crop.right - min, crop.left + dx));
+        if (dR) crop.right = Math.min(W, Math.max(crop.left + min, crop.right + dx));
+        if (dT) crop.top = Math.max(0, Math.min(crop.bottom - min, crop.top + dy));
+        if (dB) crop.bottom = Math.min(H, Math.max(crop.top + min, crop.bottom + dy));
+    }
 }
